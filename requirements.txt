@@ -1,0 +1,11 @@
+# Core runtime dependencies
+python-telegram-bot>=20.7,<22    # async Telegram control interface
+python-dotenv>=1.0.0             # load configuration from a .env file
+
+# Pocket Option connection (unofficial WebSocket client).
+# Required ONLY for live/demo trading against a real account.
+# Backtests, paper trading and the test-suite run without it.
+BinaryOptionsToolsV2>=0.1.0
+
+# Dev / testing
+pytest>=7.4

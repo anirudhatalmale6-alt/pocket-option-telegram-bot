@@ -1,0 +1,88 @@
+Connected (DEMO). Balance: 1000.00
+
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 46.7, %K 76.5)
+❌ LOSS -1.00
+PnL today: -1.00 | W/L: 0/1 (0%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 50.2, %K 22.6)
+✅ WIN +0.80
+PnL today: -0.20 | W/L: 1/1 (50%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 51.8, %K 18.2)
+❌ LOSS -1.00
+PnL today: -1.20 | W/L: 1/2 (33%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 46.3, %K 65.6)
+✅ WIN +0.80
+PnL today: -0.40 | W/L: 2/2 (50%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 46.5, %K 71.9)
+✅ WIN +0.80
+PnL today: +0.40 | W/L: 3/2 (60%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 46.5, %K 72.0)
+✅ WIN +0.80
+PnL today: +1.20 | W/L: 4/2 (67%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 53.9, %K 94.3)
+❌ LOSS -1.00
+PnL today: +0.20 | W/L: 4/3 (57%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 52.8, %K 21.5)
+❌ LOSS -1.00
+PnL today: -0.80 | W/L: 4/4 (50%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 46.4, %K 32.3)
+✅ WIN +0.80
+PnL today: +0.00 | W/L: 5/4 (56%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 52.1, %K 13.3)
+✅ WIN +0.80
+PnL today: +0.80 | W/L: 6/4 (60%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 54.6, %K 27.4)
+✅ WIN +0.80
+PnL today: +1.60 | W/L: 7/4 (64%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 50.7, %K 31.6)
+✅ WIN +0.80
+PnL today: +2.40 | W/L: 8/4 (67%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 50.8, %K 23.3)
+❌ LOSS -1.00
+PnL today: +1.40 | W/L: 8/5 (62%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 46.9, %K 75.6)
+❌ LOSS -1.00
+PnL today: +0.40 | W/L: 8/6 (57%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 52.1, %K 66.6)
+✅ WIN +0.80
+PnL today: +1.20 | W/L: 9/6 (60%) | martingale step: 0
+📈 ENTRY PUT EURUSD_otc stake 1.00 exp 60s
+downtrend rally (RSI 49.5, %K 71.8)
+❌ LOSS -1.00
+PnL today: +0.20 | W/L: 9/7 (56%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 55.3, %K 23.6)
+✅ WIN +0.80
+PnL today: +1.00 | W/L: 10/7 (59%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 50.3, %K 19.1)
+✅ WIN +0.80
+PnL today: +1.80 | W/L: 11/7 (61%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 44.7, %K 10.8)
+❌ LOSS -1.00
+PnL today: +0.80 | W/L: 11/8 (58%) | martingale step: 0
+📈 ENTRY CALL EURUSD_otc stake 1.00 exp 60s
+uptrend pullback (RSI 46.0, %K 34.1)
+✅ WIN +0.80
+PnL today: +1.60 | W/L: 12/8 (60%) | martingale step: 0
+
+=== DEMO SUMMARY ===
+PnL today: +1.60 | W/L: 12/8 (60%) | martingale step: 0
+Final paper balance: 1001.60
+
+Reminder: synthetic data + demo only. Not a profit guarantee.
