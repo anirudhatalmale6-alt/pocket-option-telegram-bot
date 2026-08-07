@@ -24,15 +24,18 @@ from .config import BotConfig
 from .risk import RiskManager
 from .strategy import Direction, Strategy
 from .trend_strategy import TrendStrategy
+from .custom_strategy import CustomStrategy
 
 
 def build_evaluator(config: BotConfig):
     """
-    Return the strategy evaluator selected by config.strategy_mode. Both the
-    pull-back Strategy and the TrendStrategy expose evaluate(candles) -> Signal,
-    so the trader treats them interchangeably. Switchable live from Telegram.
+    Return the strategy evaluator selected by config.strategy_mode. Every
+    evaluator exposes evaluate(candles) -> Signal, so the trader treats them
+    interchangeably. Switchable live from Telegram.
     """
     mode = config.strategy_mode
+    if mode == "custom":
+        return CustomStrategy(config.custom)
     if mode in ("linreg", "ema", "donchian"):
         config.trend.mode = mode
         return TrendStrategy(config.trend)

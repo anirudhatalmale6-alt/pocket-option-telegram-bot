@@ -138,10 +138,11 @@ class TelegramInterface:
     async def cmd_strategy(self, update: Update, ctx):
         if not await self._guard(update):
             return
-        valid = ("pullback", "linreg", "ema", "donchian")
+        valid = ("pullback", "linreg", "ema", "donchian", "custom")
         if not ctx.args or ctx.args[0] not in valid:
             await update.effective_message.reply_text(
-                "Usage: /strategy pullback|linreg|ema|donchian\n"
+                "Usage: /strategy pullback|linreg|ema|donchian|custom\n"
+                "custom = your ZigZag + Stochastic + Keltner setup.\n"
                 "pullback = trend + RSI/Stoch dip entry; linreg = trend-line slope; "
                 "ema = EMA trend; donchian = breakout."
             )

@@ -76,7 +76,7 @@ running 24/7 on a VPS — is in **[docs/SETUP.md](docs/SETUP.md)**.
 | `/stake <amount>` | set base stake |
 | `/expiry <seconds>` | set expiry (e.g. `180` = 3m) |
 | `/asset <symbol>` | set asset (e.g. `EURUSD_otc`) |
-| `/strategy pullback\|linreg\|ema\|donchian` | switch entry model (pull-back or a pure-trend mode) |
+| `/strategy pullback\|linreg\|ema\|donchian\|custom` | switch entry model (`custom` = ZigZag + Stochastic + Keltner) |
 | `/martingale on\|off [mult] [maxsteps]` | martingale controls |
 | `/risk <loss_cap> [profit_target]` | daily caps |
 | `/set <field.path> <value>` | change any setting, e.g. `/set strategy.rsi_oversold 25` |
