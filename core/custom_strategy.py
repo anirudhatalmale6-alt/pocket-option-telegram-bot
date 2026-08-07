@@ -29,8 +29,14 @@ from .strategy import Candle, Direction, Signal
 
 @dataclass
 class CustomSettings:
+    # NOTE: defaults below are the values that tested best on real EUR/USD in the
+    # tuning pass (see tune_custom.py). The one big change from the client's
+    # original spec is `fade=True` — on real forex the entry works far better
+    # reversed. It's one toggle away from the original (fade=False). Confirm on
+    # the demo, since Pocket Option OTC pairs may prefer the non-faded version.
+
     # Keltner Channel
-    keltner_ema: int = 21
+    keltner_ema: int = 14              # tuned (client mentioned 21; 14 tested better)
     keltner_atr: int = 9
     keltner_mult: float = 5.0
     # Stochastic (with %K slowing)
@@ -40,10 +46,18 @@ class CustomSettings:
     # Midline-cross confirmation: how many consecutive candles beyond the mid.
     confirm_candles: int = 2          # "the second candlestick above the middle line"
     # ZigZag
-    zigzag_deviation: float = 0.00013  # price move that defines a swing (~1.3 pips)
+    zigzag_deviation: float = 0.00010  # price move that defines a swing; calibratable
     zigzag_confirm: int = 3            # "wait three candlesticks for movement"
-    # Gate
-    require_all: bool = True           # all three must agree
+    # Gate / tuning knobs
+    require_all: bool = False          # use min_confirmations instead of forcing both
+    # How many of the two confirmations (Stochastic, ZigZag) must agree with the
+    # Keltner midline trigger. 2 = all three line up (client's original), 1 = the
+    # Keltner trigger plus either confirmation, 0 = Keltner trigger alone.
+    min_confirmations: int = 2
+    # Fade mode: enter the OPPOSITE direction of the midline trigger. Short-term
+    # forex mean-reverts, so this tested far better than the breakout version.
+    # This is the one knob that reverses the client's original entry direction.
+    fade: bool = True
 
 
 # ----------------------------------------------------------------------------
@@ -178,12 +192,26 @@ class CustomStrategy:
 
         snap = dict(stoch_k=k_now, stoch_d=d_now, ema_fast=mid_series[-1])
 
-        # --- combine: all three must line up ---
-        if keltner_up and (not s.require_all or (stoch_up and zz_up)):
-            return Signal(Direction.CALL,
-                          f"Keltner cross up + Stoch {k_now:.0f}/{d_now:.0f} + ZigZag up", **snap)
-        if keltner_down and (not s.require_all or (stoch_down and zz_down)):
-            return Signal(Direction.PUT,
-                          f"Keltner cross down + Stoch {k_now:.0f}/{d_now:.0f} + ZigZag down", **snap)
+        # --- combine: Keltner trigger + N confirmations ---
+        # `require_all` (legacy) forces both confirmations; otherwise use
+        # min_confirmations (count of Stochastic/ZigZag that agree with the trigger).
+        need_conf = 2 if s.require_all else s.min_confirmations
+        base: Optional[Direction] = None
+        detail = ""
+        if keltner_up:
+            agree = int(stoch_up) + int(zz_up)
+            if agree >= need_conf:
+                base, detail = Direction.CALL, f"Keltner up + {agree}/2 conf (Stoch {k_now:.0f}/{d_now:.0f})"
+        elif keltner_down:
+            agree = int(stoch_down) + int(zz_down)
+            if agree >= need_conf:
+                base, detail = Direction.PUT, f"Keltner down + {agree}/2 conf (Stoch {k_now:.0f}/{d_now:.0f})"
 
-        return Signal(Direction.NONE, "indicators not all aligned", **snap)
+        if base is None:
+            return Signal(Direction.NONE, "indicators not aligned", **snap)
+
+        # Fade mode flips the direction (mean-reversion test).
+        if s.fade:
+            base = Direction.PUT if base is Direction.CALL else Direction.CALL
+            detail = "FADE " + detail
+        return Signal(base, detail, **snap)
