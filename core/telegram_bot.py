@@ -36,6 +36,7 @@ HELP = (
     "/stake <amount> – base stake\n"
     "/expiry <seconds> – expiry (e.g. 180 = 3m)\n"
     "/asset <symbol> – e.g. EURUSD_otc\n"
+    "/strategy pullback|linreg|ema|donchian – switch entry model\n"
     "/martingale on|off [mult] [maxsteps]\n"
     "/risk <daily_loss_cap> [profit_target]\n"
     "/set <field.path> <value> – advanced (e.g. /set strategy.rsi_oversold 25)\n"
@@ -98,6 +99,7 @@ class TelegramInterface:
         mg_txt = f"on x{mg.multiplier} max {mg.max_steps}" if mg.enabled else "off"
         return (
             f"State: {'RUNNING' if c.running else 'STOPPED'} ({mode})\n"
+            f"Strategy: {c.strategy_mode}\n"
             f"Asset: {c.asset} | Expiry: {c.expiry_seconds}s | TF: {c.candle_timeframe}s\n"
             f"Stake: {c.risk.base_stake} | Martingale: {mg_txt}\n"
             f"Daily loss cap: {c.risk.daily_loss_cap} | Profit target: {c.risk.daily_profit_target}\n"
@@ -132,6 +134,22 @@ class TelegramInterface:
             await update.effective_message.reply_text(f"Asset set to {self.config.asset}")
         except IndexError:
             await update.effective_message.reply_text("Usage: /asset <symbol>  e.g. EURUSD_otc")
+
+    async def cmd_strategy(self, update: Update, ctx):
+        if not await self._guard(update):
+            return
+        valid = ("pullback", "linreg", "ema", "donchian")
+        if not ctx.args or ctx.args[0] not in valid:
+            await update.effective_message.reply_text(
+                "Usage: /strategy pullback|linreg|ema|donchian\n"
+                "pullback = trend + RSI/Stoch dip entry; linreg = trend-line slope; "
+                "ema = EMA trend; donchian = breakout."
+            )
+            return
+        self.config.strategy_mode = ctx.args[0]
+        await update.effective_message.reply_text(
+            f"Strategy set to '{ctx.args[0]}'. Takes effect on the next candle."
+        )
 
     async def cmd_martingale(self, update: Update, ctx):
         if not await self._guard(update):
@@ -236,6 +254,7 @@ class TelegramInterface:
         app.add_handler(CommandHandler("stake", self.cmd_stake))
         app.add_handler(CommandHandler("expiry", self.cmd_expiry))
         app.add_handler(CommandHandler("asset", self.cmd_asset))
+        app.add_handler(CommandHandler("strategy", self.cmd_strategy))
         app.add_handler(CommandHandler("martingale", self.cmd_martingale))
         app.add_handler(CommandHandler("risk", self.cmd_risk))
         app.add_handler(CommandHandler("set", self.cmd_set))

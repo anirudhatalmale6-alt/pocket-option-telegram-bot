@@ -18,7 +18,7 @@ martingale, risk caps, start/stop — is adjustable live from chat.
 ## Features
 
 - **Direct execution** on Pocket Option (binary CALL/PUT).
-- **Strategy engine**: EMA trend filter + RSI/Stochastic pull-back entries, all thresholds tunable.
+- **Multiple strategies, switchable live**: pull-back (EMA trend + RSI/Stochastic dip entry) plus three pure-trend modes — `linreg` (trend-line slope), `ema` (EMA trend), `donchian` (breakout). All thresholds tunable.
 - **Telegram control**: `/start` `/stop` `/status`, quick setters (`/stake`, `/expiry`, `/asset`), martingale & risk commands, a generic `/set field value`, plus inline Start/Stop/Status buttons.
 - **Instant notifications** on every entry, result, error and reconnect.
 - **Money management**: base stake, optional martingale (multiplier + max steps), daily loss cap and daily profit target.
@@ -76,6 +76,7 @@ running 24/7 on a VPS — is in **[docs/SETUP.md](docs/SETUP.md)**.
 | `/stake <amount>` | set base stake |
 | `/expiry <seconds>` | set expiry (e.g. `180` = 3m) |
 | `/asset <symbol>` | set asset (e.g. `EURUSD_otc`) |
+| `/strategy pullback\|linreg\|ema\|donchian` | switch entry model (pull-back or a pure-trend mode) |
 | `/martingale on\|off [mult] [maxsteps]` | martingale controls |
 | `/risk <loss_cap> [profit_target]` | daily caps |
 | `/set <field.path> <value>` | change any setting, e.g. `/set strategy.rsi_oversold 25` |

@@ -16,6 +16,7 @@ from typing import Optional
 from dotenv import load_dotenv
 
 from .strategy import StrategySettings
+from .trend_strategy import TrendSettings
 
 load_dotenv()  # read a local .env if present
 
@@ -72,7 +73,13 @@ class BotConfig:
     candle_timeframe: int = 60         # seconds per candle used for signals
     poll_interval: float = 1.0         # main loop tick in seconds
 
+    # Which entry model to trade with:
+    #   "pullback" -> trend + RSI/Stochastic pull-back (core/strategy.py)
+    #   "linreg" / "ema" / "donchian" -> pure trend modes (core/trend_strategy.py)
+    strategy_mode: str = "pullback"
+
     strategy: StrategySettings = field(default_factory=StrategySettings)
+    trend: TrendSettings = field(default_factory=TrendSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
 
@@ -91,6 +98,8 @@ class BotConfig:
         cfg.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
         cfg.candle_timeframe = _i("CANDLE_TIMEFRAME", cfg.candle_timeframe)
+        cfg.strategy_mode = os.getenv("STRATEGY_MODE", cfg.strategy_mode)
+        cfg.trend.mode = os.getenv("TREND_MODE", cfg.trend.mode)
 
         cfg.risk.base_stake = _f("BASE_STAKE", cfg.risk.base_stake)
         cfg.risk.daily_loss_cap = _f("DAILY_LOSS_CAP", cfg.risk.daily_loss_cap)

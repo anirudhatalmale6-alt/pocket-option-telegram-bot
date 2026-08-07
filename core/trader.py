@@ -23,6 +23,20 @@ from .broker import Broker
 from .config import BotConfig
 from .risk import RiskManager
 from .strategy import Direction, Strategy
+from .trend_strategy import TrendStrategy
+
+
+def build_evaluator(config: BotConfig):
+    """
+    Return the strategy evaluator selected by config.strategy_mode. Both the
+    pull-back Strategy and the TrendStrategy expose evaluate(candles) -> Signal,
+    so the trader treats them interchangeably. Switchable live from Telegram.
+    """
+    mode = config.strategy_mode
+    if mode in ("linreg", "ema", "donchian"):
+        config.trend.mode = mode
+        return TrendStrategy(config.trend)
+    return Strategy(config.strategy)  # default: pull-back
 
 # A notifier is any async function taking a string (wired to Telegram in main).
 Notifier = Callable[[str], Awaitable[None]]
@@ -32,7 +46,7 @@ class Trader:
     def __init__(self, config: BotConfig, broker: Broker, notify: Optional[Notifier] = None):
         self.config = config
         self.broker = broker
-        self.strategy = Strategy(config.strategy)
+        self.strategy = build_evaluator(config)
         self.risk = RiskManager(config.risk, config.martingale)
         self._notify = notify or self._noop
         self._active = False           # a trade is currently open
@@ -72,15 +86,20 @@ class Trader:
 
     async def _loop(self) -> None:
         cfg = self.config
-        # Keep the strategy pointing at the (possibly edited) settings object.
-        self.strategy.settings = cfg.strategy
         self.risk.risk = cfg.risk
         self.risk.martingale = cfg.martingale
+        active_mode = cfg.strategy_mode
 
         while not self._stop:
             if not cfg.running:
                 await asyncio.sleep(cfg.poll_interval)
                 continue
+
+            # Rebuild the evaluator if the strategy was switched from Telegram.
+            if cfg.strategy_mode != active_mode:
+                self.strategy = build_evaluator(cfg)
+                active_mode = cfg.strategy_mode
+                await self.notify(f"Strategy switched to: {active_mode}")
 
             # Respect daily caps before doing anything.
             allowed, reason = self.risk.can_trade()
