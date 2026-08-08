@@ -25,6 +25,7 @@ from .risk import RiskManager
 from .strategy import Direction, Strategy
 from .trend_strategy import TrendStrategy
 from .custom_strategy import CustomStrategy
+from .alligator_strategy import AlligatorStrategy
 
 
 def build_evaluator(config: BotConfig):
@@ -36,6 +37,8 @@ def build_evaluator(config: BotConfig):
     mode = config.strategy_mode
     if mode == "custom":
         return CustomStrategy(config.custom)
+    if mode == "alligator":
+        return AlligatorStrategy(config.alligator)
     if mode in ("linreg", "ema", "donchian"):
         config.trend.mode = mode
         return TrendStrategy(config.trend)

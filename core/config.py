@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from .strategy import StrategySettings
 from .trend_strategy import TrendSettings
 from .custom_strategy import CustomSettings
+from .alligator_strategy import AlligatorSettings
 
 load_dotenv()  # read a local .env if present
 
@@ -78,11 +79,13 @@ class BotConfig:
     #   "pullback" -> trend + RSI/Stochastic pull-back (core/strategy.py)
     #   "linreg" / "ema" / "donchian" -> pure trend modes (core/trend_strategy.py)
     #   "custom" -> client's ZigZag + Stochastic + Keltner strategy
+    #   "alligator" -> client's Bill Williams Alligator + RSI strategy
     strategy_mode: str = "pullback"
 
     strategy: StrategySettings = field(default_factory=StrategySettings)
     trend: TrendSettings = field(default_factory=TrendSettings)
     custom: CustomSettings = field(default_factory=CustomSettings)
+    alligator: AlligatorSettings = field(default_factory=AlligatorSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
 
