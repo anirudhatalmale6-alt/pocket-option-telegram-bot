@@ -27,6 +27,7 @@ from .trend_strategy import TrendStrategy
 from .custom_strategy import CustomStrategy
 from .alligator_strategy import AlligatorStrategy
 from .rsi_strategy import RsiStrategy
+from .confluence_strategy import ConfluenceStrategy
 
 
 def build_evaluator(config: BotConfig):
@@ -42,6 +43,8 @@ def build_evaluator(config: BotConfig):
         return AlligatorStrategy(config.alligator)
     if mode == "rsi":
         return RsiStrategy(config.rsi)
+    if mode == "confluence":
+        return ConfluenceStrategy(config.confluence)
     if mode in ("linreg", "ema", "donchian"):
         config.trend.mode = mode
         return TrendStrategy(config.trend)

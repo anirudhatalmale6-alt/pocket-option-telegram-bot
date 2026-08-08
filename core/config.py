@@ -20,6 +20,7 @@ from .trend_strategy import TrendSettings
 from .custom_strategy import CustomSettings
 from .alligator_strategy import AlligatorSettings
 from .rsi_strategy import RsiSettings
+from .confluence_strategy import ConfluenceSettings
 
 load_dotenv()  # read a local .env if present
 
@@ -82,6 +83,7 @@ class BotConfig:
     #   "custom" -> client's ZigZag + Stochastic + Keltner strategy
     #   "alligator" -> client's Bill Williams Alligator + RSI strategy
     #   "rsi" -> simple fast RSI reversal (RSI 10, for 30s candles / 1-2m expiry)
+    #   "confluence" -> trade only when multiple best strategies agree (higher WR)
     strategy_mode: str = "pullback"
 
     strategy: StrategySettings = field(default_factory=StrategySettings)
@@ -89,6 +91,7 @@ class BotConfig:
     custom: CustomSettings = field(default_factory=CustomSettings)
     alligator: AlligatorSettings = field(default_factory=AlligatorSettings)
     rsi: RsiSettings = field(default_factory=RsiSettings)
+    confluence: ConfluenceSettings = field(default_factory=ConfluenceSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
 

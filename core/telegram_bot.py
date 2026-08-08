@@ -36,7 +36,7 @@ HELP = (
     "/stake <amount> – base stake\n"
     "/expiry <seconds> – expiry (e.g. 180 = 3m)\n"
     "/asset <symbol> – e.g. EURUSD_otc\n"
-    "/strategy pullback|linreg|ema|donchian|custom|alligator|rsi – switch entry model\n"
+    "/strategy pullback|linreg|ema|donchian|custom|alligator|rsi|confluence – switch entry model\n"
     "/martingale on|off [mult] [maxsteps]\n"
     "/risk <daily_loss_cap> [profit_target]\n"
     "/set <field.path> <value> – advanced (e.g. /set strategy.rsi_oversold 25)\n"
@@ -138,13 +138,14 @@ class TelegramInterface:
     async def cmd_strategy(self, update: Update, ctx):
         if not await self._guard(update):
             return
-        valid = ("pullback", "linreg", "ema", "donchian", "custom", "alligator", "rsi")
+        valid = ("pullback", "linreg", "ema", "donchian", "custom", "alligator", "rsi", "confluence")
         if not ctx.args or ctx.args[0] not in valid:
             await update.effective_message.reply_text(
-                "Usage: /strategy pullback|linreg|ema|donchian|custom|alligator|rsi\n"
+                "Usage: /strategy pullback|linreg|ema|donchian|custom|alligator|rsi|confluence\n"
                 "custom = your ZigZag + Stochastic + Keltner setup.\n"
                 "alligator = your Bill Williams Alligator + RSI setup.\n"
                 "rsi = simple fast RSI reversal (RSI 10, for 30s candles).\n"
+                "confluence = trade only when several of the best setups agree (higher WR, fewer trades).\n"
                 "pullback = trend + RSI/Stoch dip entry; linreg = trend-line slope; "
                 "ema = EMA trend; donchian = breakout."
             )
