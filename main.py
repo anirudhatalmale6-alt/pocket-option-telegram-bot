@@ -1,12 +1,17 @@
 """
-Entry point: wires the Telegram interface and the trader together and runs both
-concurrently on one asyncio event loop.
+Entry point: starts the trading loop plus whichever control interfaces are
+configured, all on one asyncio event loop.
 
-  python main.py            # live/demo trading (needs PO_SSID + TELEGRAM_TOKEN)
-  python main.py --paper    # run with the offline PaperBroker (no credentials)
+  python main.py            # browser control panel + trading
+  python main.py --paper    # same, but with the offline simulator (no account)
 
-Choose broker by whether PO_SSID is set; --paper forces the simulator so you can
-watch the whole pipeline (signals -> trades -> Telegram) without an account.
+Control interfaces:
+  * Browser panel  — always on unless WEB_ENABLED=false. Open the printed URL,
+                     press START. Nothing to install.
+  * Telegram       — only starts if TELEGRAM_TOKEN is set. Entirely optional.
+
+Both interfaces read and write the SAME config object the trader uses, so you
+can run either, both, or neither.
 """
 
 from __future__ import annotations
@@ -14,11 +19,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
+from typing import Optional
 
 from core.broker import PaperBroker
 from core.config import BotConfig
-from core.telegram_bot import TelegramInterface
 from core.trader import Trader
+from core.web_ui import WebInterface
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,7 +36,7 @@ log = logging.getLogger("bot")
 async def run(paper: bool) -> None:
     config = BotConfig.from_env()
 
-    # Pick the broker.
+    # ---------------------------------------------------------- broker
     if paper or not config.po_ssid:
         if not paper:
             log.warning("PO_SSID not set — falling back to PaperBroker (offline simulator).")
@@ -41,28 +47,69 @@ async def run(paper: bool) -> None:
         from core.po_broker import PocketOptionBroker
         broker = PocketOptionBroker(config.po_ssid, demo=config.po_demo)
 
-    tg = TelegramInterface(config)
-    trader = Trader(config, broker, notify=tg.send)
-    app = tg.build(reset_cb=trader.risk.reset_day)
+    # ------------------------------------------------ control interfaces
+    web = WebInterface(config, config.web_host, config.web_port, config.web_password) \
+        if config.web_enabled else None
 
-    # Start the Telegram polling app and the trading loop side by side.
-    await app.initialize()
-    await app.start()
-    await app.updater.start_polling()
-    log.info("Telegram bot started. Send /help in your chat.")
+    tg = None
+    if config.telegram_token:
+        from core.telegram_bot import TelegramInterface
+        tg = TelegramInterface(config)
 
+    if web is None and tg is None:
+        log.warning("No control interface enabled — the bot cannot be started or stopped.")
+
+    async def notify(msg: str) -> None:
+        """Fan a single event out to every interface that is running."""
+        if web:
+            await web.send(msg)
+        if tg:
+            await tg.send(msg)
+
+    def status(connected: bool, balance: Optional[float]) -> None:
+        if web:
+            web.connected = connected
+            if balance is not None:
+                web.balance = balance
+
+    trader = Trader(config, broker, notify=notify, status_cb=status)
+
+    if web:
+        # The panel needs the live risk manager to show PnL and the trade list.
+        web.risk = trader.risk
+        web.reset_cb = trader.risk.reset_day
+        web.paper = isinstance(broker, PaperBroker)
+        web.start()
+        shown = "localhost" if config.web_host in ("0.0.0.0", "") else config.web_host
+        log.info("Control panel: http://%s:%s", shown, config.web_port)
+        if not config.web_password and config.web_host == "0.0.0.0":
+            log.warning("WEB_PASSWORD is not set — anyone who can reach this port "
+                        "can start/stop trading. Set one before exposing a VPS.")
+
+    tg_app = None
+    if tg:
+        tg_app = tg.build(reset_cb=trader.risk.reset_day)
+        await tg_app.initialize()
+        await tg_app.start()
+        await tg_app.updater.start_polling()
+        log.info("Telegram bot started. Send /help in your chat.")
+
+    # ------------------------------------------------------------- run
     trader_task = asyncio.create_task(trader.run())
     try:
         await trader_task
     finally:
         trader.stop()
-        await app.updater.stop()
-        await app.stop()
-        await app.shutdown()
+        if web:
+            web.stop()
+        if tg_app:
+            await tg_app.updater.stop()
+            await tg_app.stop()
+            await tg_app.shutdown()
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Pocket Option Telegram trading bot")
+    parser = argparse.ArgumentParser(description="Pocket Option trading bot")
     parser.add_argument("--paper", action="store_true", help="use the offline paper broker")
     args = parser.parse_args()
     try:

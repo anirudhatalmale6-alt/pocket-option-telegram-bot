@@ -50,19 +50,33 @@ def build_evaluator(config: BotConfig):
         return TrendStrategy(config.trend)
     return Strategy(config.strategy)  # default: pull-back
 
-# A notifier is any async function taking a string (wired to Telegram in main).
+# A notifier is any async function taking a string (wired to Telegram/web in main).
 Notifier = Callable[[str], Awaitable[None]]
+
+# A status callback reports connection state to the UI: (connected, balance).
+StatusCb = Callable[[bool, Optional[float]], None]
 
 
 class Trader:
-    def __init__(self, config: BotConfig, broker: Broker, notify: Optional[Notifier] = None):
+    def __init__(self, config: BotConfig, broker: Broker,
+                 notify: Optional[Notifier] = None,
+                 status_cb: Optional[StatusCb] = None):
         self.config = config
         self.broker = broker
         self.strategy = build_evaluator(config)
         self.risk = RiskManager(config.risk, config.martingale)
         self._notify = notify or self._noop
+        self._status_cb = status_cb
         self._active = False           # a trade is currently open
         self._stop = False             # hard stop for shutdown
+
+    def _status(self, connected: bool, balance: Optional[float] = None) -> None:
+        """Tell the UI whether we are connected (never fatal if it fails)."""
+        if self._status_cb:
+            try:
+                self._status_cb(connected, balance)
+            except Exception:
+                pass
 
     async def _noop(self, _msg: str) -> None:
         return
@@ -83,17 +97,20 @@ class Trader:
                 await self.broker.connect()
                 bal = await self.broker.balance()
                 mode = "DEMO" if self.config.po_demo else "LIVE"
+                self._status(True, bal)
                 await self.notify(f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
                 backoff = 2
                 await self._loop()
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # connection dropped or unexpected error
+                self._status(False)
                 await self.notify(f"⚠️ Error: {e}. Reconnecting in {backoff}s...")
                 traceback.print_exc()
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, 60)  # exponential backoff, capped
             finally:
+                self._status(False)
                 await self.broker.close()
 
     async def _loop(self) -> None:
@@ -154,6 +171,12 @@ class Trader:
             await self.notify(
                 f"{icon} {result.result.upper()} {result.profit:+.2f}\n{self.risk.summary()}"
             )
+
+            # Keep the dashboard's balance tile honest after every settlement.
+            try:
+                self._status(True, await self.broker.balance())
+            except Exception:
+                pass
         finally:
             self._active = False
 

@@ -30,7 +30,34 @@ cp .env.example .env
 
 ---
 
-## 2. Create your Telegram bot
+## 2. Choose how you want to control the bot
+
+You have two options. **You do not need both.**
+
+### Option A — Browser control panel (recommended, nothing to install)
+
+Already on by default. When the bot starts it prints a line like:
+
+```
+Control panel: http://localhost:8080
+```
+
+Open that address in any browser — laptop, Chromebook, phone — and you get:
+
+* big **START** / **STOP** buttons,
+* today's profit/loss, win rate and balance,
+* stake, expiry, candle size, asset, strategy and risk caps (saved instantly,
+  applied on the next candle — no restart),
+* a live list of every trade with win/loss and profit,
+* an activity feed of what the bot is doing.
+
+If the bot runs on a VPS, use the server's address instead of `localhost`
+(e.g. `http://203.0.113.10:8080`) and **set `WEB_PASSWORD` in `.env` first** —
+without it, anyone who can reach that port can start and stop your trading.
+
+### Option B — Telegram
+
+Optional. Leave `TELEGRAM_TOKEN` blank in `.env` and Telegram never starts.
 
 1. In Telegram, open **@BotFather** → send `/newbot` → follow the prompts.
 2. It gives you a **token** like `123456789:AAErr...`. Put it in `.env` as
@@ -72,17 +99,27 @@ python demo_run.py          # prints simulated entries/results to the console
 python backtest.py          # strategy stats on synthetic data
 ```
 
+You can also open the control panel with no account at all — it runs the offline
+simulator so you can click around safely:
+```bash
+python main.py --paper       # then open http://localhost:8080
+```
+
 Then start the real bot (demo balance):
 ```bash
 python main.py
 ```
-In Telegram, send `/help`, then `/status`, then `/start`. You'll get a message
-on every trade entry and result.
 
-Tune anything live, e.g.:
+**Using the panel:** open the printed URL, check the badge says `DEMO`, set your
+stake and expiry, pick a strategy, press **START**. Trades appear in the list as
+they settle.
+
+**Using Telegram instead:** send `/help`, then `/status`, then `/start`. You get
+a message on every trade entry and result. Tune anything live, e.g.:
 ```
 /stake 2
 /expiry 180
+/strategy confluence
 /martingale on 2 2
 /risk 20 15
 /set strategy.rsi_oversold 25

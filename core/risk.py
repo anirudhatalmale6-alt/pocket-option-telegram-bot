@@ -9,6 +9,7 @@ reasoned about (and tested) on their own.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import List
 
@@ -22,6 +23,9 @@ class TradeRecord:
     result: str        # "win" | "loss" | "draw" | "pending"
     profit: float      # net profit for this trade (negative on loss)
     martingale_step: int
+    # Wall-clock time the trade settled. Used by the web dashboard to show a
+    # timestamped trade log; defaults so existing callers stay unchanged.
+    ts: float = field(default_factory=time.time)
 
 
 @dataclass

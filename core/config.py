@@ -69,9 +69,17 @@ class BotConfig:
     asset: str = "EURUSD_otc"          # default traded asset
     expiry_seconds: int = 60           # binary expiry (60 = 1m). Client range 3m..1h ok.
 
-    # --- Telegram ---
+    # --- Telegram (optional) ---
+    # Leave the token blank to run without Telegram entirely; the browser
+    # control panel below is a complete replacement for it.
     telegram_token: str = ""
     telegram_chat_id: str = ""         # authorised chat that may control the bot
+
+    # --- Browser control panel ---
+    web_enabled: bool = True
+    web_host: str = "0.0.0.0"          # 0.0.0.0 so a VPS is reachable from your laptop
+    web_port: int = 8080
+    web_password: str = ""             # SET THIS on a public VPS: it can start trading
 
     # --- Trading loop ---
     candle_timeframe: int = 60         # seconds per candle used for signals
@@ -109,7 +117,13 @@ class BotConfig:
         cfg.telegram_token = os.getenv("TELEGRAM_TOKEN", "")
         cfg.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
+        cfg.web_enabled = _b("WEB_ENABLED", cfg.web_enabled)
+        cfg.web_host = os.getenv("WEB_HOST", cfg.web_host)
+        cfg.web_port = _i("WEB_PORT", cfg.web_port)
+        cfg.web_password = os.getenv("WEB_PASSWORD", "")
+
         cfg.candle_timeframe = _i("CANDLE_TIMEFRAME", cfg.candle_timeframe)
+        cfg.poll_interval = _f("POLL_INTERVAL", cfg.poll_interval)
         cfg.strategy_mode = os.getenv("STRATEGY_MODE", cfg.strategy_mode)
         cfg.trend.mode = os.getenv("TREND_MODE", cfg.trend.mode)
 
@@ -129,4 +143,6 @@ class BotConfig:
             d["po_ssid"] = "***set***"
         if d.get("telegram_token"):
             d["telegram_token"] = "***set***"
+        if d.get("web_password"):
+            d["web_password"] = "***set***"
         return d
