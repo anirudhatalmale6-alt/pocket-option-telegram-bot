@@ -65,6 +65,7 @@ class RiskSettings:
 class BotConfig:
     # --- Pocket Option connection ---
     po_ssid: str = ""                  # browser session token; supplied at connect step
+    po_uid: int = 0                    # account id, only needed if po_ssid is a bare session
     po_demo: bool = True               # ALWAYS start on demo
     asset: str = "EURUSD_otc"          # default traded asset
     expiry_seconds: int = 60           # binary expiry (60 = 1m). Client range 3m..1h ok.
@@ -109,7 +110,10 @@ class BotConfig:
     @classmethod
     def from_env(cls) -> "BotConfig":
         cfg = cls()
-        cfg.po_ssid = os.getenv("PO_SSID", "")
+        # PO_SSID is the whole 42["auth",{...}] line. PO_SESSION is the easier
+        # route: just the ci_session cookie value, paired with PO_UID.
+        cfg.po_ssid = os.getenv("PO_SSID", "") or os.getenv("PO_SESSION", "")
+        cfg.po_uid = _i("PO_UID", 0)
         cfg.po_demo = _b("PO_DEMO", True)
         cfg.asset = os.getenv("PO_ASSET", cfg.asset)
         cfg.expiry_seconds = _i("PO_EXPIRY_SECONDS", cfg.expiry_seconds)

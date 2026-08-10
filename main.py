@@ -45,7 +45,15 @@ async def run(paper: bool) -> None:
     else:
         # Imported lazily so the optional dependency is only needed for real trading.
         from core.po_broker import PocketOptionBroker
-        broker = PocketOptionBroker(config.po_ssid, demo=config.po_demo)
+        from core.ssid import SsidError
+        try:
+            broker = PocketOptionBroker(config.po_ssid, demo=config.po_demo,
+                                        uid=config.po_uid)
+        except SsidError as exc:
+            # The token is the one thing nobody gets right first time, so say
+            # exactly what is wrong instead of dying inside the socket layer.
+            log.error("Pocket Option token problem:\n%s", exc)
+            return
 
     # ------------------------------------------------ control interfaces
     web = WebInterface(config, config.web_host, config.web_port, config.web_password) \

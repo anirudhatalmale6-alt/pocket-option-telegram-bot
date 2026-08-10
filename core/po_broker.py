@@ -16,10 +16,15 @@ bot (backtests, paper trading, tests) run with zero external dependencies.
 
 Getting your SSID (demo):
   1. Log in to Pocket Option in Chrome and switch to the DEMO account.
-  2. Open DevTools -> Network -> filter "socket" -> click the ws connection.
-  3. In the first outgoing frame find the 42["auth",{...}] message; the whole
-     42["auth",{"session":"...","isDemo":1,...}] string is your SSID payload.
-  Paste it into PO_SSID in your .env. Full walkthrough in docs/SETUP.md.
+  2. Open DevTools FIRST (F12) -> Network -> filter WS -> then refresh (Ctrl+R).
+     DevTools only records frames from the moment it is open.
+  3. Several WebSockets open. Click each and read its Messages tab; the TRADING
+     one is the one containing 451-["successauth",...]. The green outgoing
+     42["auth",{"session":"...","isDemo":1,...}] line above it is your SSID.
+  Paste it into PO_SSID in your .env. If you copied the chart socket's token by
+  mistake, core/ssid.py detects it and tells you. Easier alternative: put the
+  ci_session cookie value in PO_SESSION and your account id in PO_UID.
+  Full walkthrough in docs/SETUP.md.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ import asyncio
 from typing import List
 
 from .broker import Broker, TradeResult
+from .ssid import normalise
 from .strategy import Candle
 
 try:
@@ -40,10 +46,13 @@ except Exception:  # pragma: no cover - depends on optional install
 
 
 class PocketOptionBroker(Broker):
-    def __init__(self, ssid: str, demo: bool = True):
+    def __init__(self, ssid: str, demo: bool = True, uid: int = 0):
         if not ssid:
             raise ValueError("PO_SSID is empty — paste your browser session token (see docs/SETUP.md)")
-        self._ssid = ssid
+        # Accept whatever the user managed to copy (full auth frame, bare object
+        # or just the ci_session cookie) and fail early with a readable message
+        # if it is the chart socket's token instead of the trading one.
+        self._ssid = normalise(ssid, uid=uid, demo=demo)
         self._demo = demo
         self._client = None
 

@@ -74,17 +74,39 @@ Optional. Leave `TELEGRAM_TOKEN` blank in `.env` and Telegram never starts.
 The bot logs in the same way your browser does, using the session token from a
 logged-in session. **Use your DEMO account for this.**
 
+### Option A — the WebSocket frame
+
 1. Open **pocketoption.com** in **Google Chrome** and log in.
 2. Switch the account selector to **Demo (QT-Demo)**.
-3. Press **F12** → **Network** tab → in the filter box type `socket`.
-4. Refresh the page. Click the `wss://...` entry that appears → **Messages**.
-5. Look at the outgoing (green ▲) frames for one starting with:
+3. Press **F12** to open DevTools **first**, then click **Network** → **WS**.
+   DevTools only records frames from the moment it is open, so opening it
+   afterwards gives you an empty list.
+4. **Now** press **Ctrl+R** to refresh. Several `wss://...` entries appear.
+5. Click each one → **Messages**. You want the connection that contains a line
+   reading `451-["successauth",...]` — that is the **trading** socket. The
+   others are chart/price feeds and cannot place orders.
+6. In that connection, find the outgoing (green ▲) frame starting with:
    ```
-   42["auth",{"session":"...","isDemo":1,"uid":...,"platform":...}]
+   42["auth",{"session":"a:4:{s:10:\"session_id\";...","isDemo":1,"uid":...,"platform":2}]
    ```
-6. Right-click → **Copy message**. That entire `42["auth",{...}]` string is your
-   SSID. Paste it into `.env` as `PO_SSID` (keep it in quotes if your editor
-   needs it) and set `PO_DEMO=true`.
+   The `session` value is long and full of backslashes. If what you found is
+   short (32 characters) or says `sessionToken` / `isChart`, that is the chart
+   socket — keep looking.
+7. Right-click → **Copy message**. Paste the entire `42["auth",{...}]` string
+   into `.env` as `PO_SSID` and set `PO_DEMO=true`.
+
+### Option B — the cookie (usually easier)
+
+1. In DevTools open the **Application** tab → **Storage** → **Cookies** →
+   `https://pocketoption.com`.
+2. Find the row named **`ci_session`** and copy its **Value** (it starts with
+   `a:4:{`).
+3. Put that in `.env` as `PO_SESSION`, and put your numeric account id in
+   `PO_UID` (it is the `uid` shown in any auth frame, or on your PO profile).
+
+The bot builds the auth line for you and checks it at start-up. If you paste the
+wrong token it tells you exactly which one you grabbed and what to look for
+instead, rather than silently failing to connect.
 
 > The token expires when your browser session ends. If the bot says "auth
 > failed", just grab a fresh one the same way.
