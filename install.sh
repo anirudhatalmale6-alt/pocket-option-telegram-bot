@@ -22,20 +22,43 @@ warn() { echo "${YELLOW}  ! ${RESET} $*"; }
 cd "$(dirname "$0")"
 
 say "Checking for Python..."
-if ! command -v python3 >/dev/null 2>&1 || ! python3 -m venv --help >/dev/null 2>&1; then
+if ! command -v python3 >/dev/null 2>&1; then
     say "Installing Python (you may be asked for your password)..."
     sudo apt-get update -qq
     sudo apt-get install -y -qq python3 python3-venv python3-pip git
 fi
 ok "$(python3 --version)"
 
+# Note on the check below: `python3 -m venv --help` succeeds on Debian even when
+# the python3-venv package is missing, and the failure only shows up partway
+# through creation — leaving behind a .venv DIRECTORY with no interpreter in it.
+# So we test for a usable interpreter, not for the directory, and we clear out
+# any half-built one before retrying. (This is exactly what bit the first run.)
 say "Creating the virtual environment (.venv)..."
-[ -d .venv ] || python3 -m venv .venv
+if [ ! -x .venv/bin/python ]; then
+    if [ -e .venv ]; then
+        warn "found an incomplete .venv from an earlier attempt — rebuilding it"
+        rm -rf .venv
+    fi
+    if ! python3 -m venv .venv >/dev/null 2>&1; then
+        say "Installing the missing Python venv package..."
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq python3-venv python3-pip
+        rm -rf .venv
+        python3 -m venv .venv
+    fi
+fi
+if [ ! -x .venv/bin/python ]; then
+    echo "Could not create the virtual environment. Send me this whole window." >&2
+    exit 1
+fi
+# A venv can exist without pip (--without-pip, or a trimmed distro python).
+[ -x .venv/bin/pip ] || .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
 ok "virtual environment ready"
 
 say "Installing the bot's dependencies (this takes a minute or two)..."
-./.venv/bin/pip install --quiet --upgrade pip
-./.venv/bin/pip install --quiet -r requirements.txt
+.venv/bin/python -m pip install --quiet --upgrade pip
+.venv/bin/python -m pip install --quiet -r requirements.txt
 ok "dependencies installed"
 
 if [ ! -f .env ]; then
@@ -47,8 +70,8 @@ else
 fi
 
 say "Running the tests to prove the install is sound..."
-./.venv/bin/pip install --quiet pytest
-./.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m pip install --quiet pytest
+.venv/bin/python -m pytest tests/ -q
 
 cat <<EOF
 
