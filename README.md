@@ -40,6 +40,7 @@ adjustable live without a restart.
 ```
 pocket_bot/
 ├── main.py                    # entrypoint (trader + control interfaces)
+├── scan_assets.py             # live payouts + the win rate each one demands
 ├── demo_run.py                # offline console demo of the live loop (no account)
 ├── backtest.py                # backtest on synthetic data or your own CSV
 ├── *_backtest.py              # per-strategy backtests on real EUR/USD data
@@ -52,6 +53,8 @@ pocket_bot/
 │   ├── alligator_strategy.py  # Bill Williams Alligator + RSI
 │   ├── rsi_strategy.py        # fast RSI reversal (30s candles)
 │   ├── confluence_strategy.py # trade only when strategies agree
+│   ├── assets.py              # live asset/payout table (read-only)
+│   ├── ssid.py                # session-token parsing + friendly errors
 │   ├── risk.py                # stake sizing, martingale, daily caps
 │   ├── broker.py              # broker interface + offline PaperBroker
 │   ├── po_broker.py           # real Pocket Option WebSocket broker
@@ -92,6 +95,27 @@ Option SSID, and running 24/7 on a VPS — is in **[docs/SETUP.md](docs/SETUP.md
 Every trade is listed with direction, stake, result and profit, and the activity
 feed shows exactly why each entry was taken. Settings apply on the next candle —
 no restart. Set `WEB_PASSWORD` in `.env` before exposing the panel on a VPS.
+
+## Pick the pair before you pick the strategy
+
+```bash
+python scan_assets.py
+```
+
+Payout decides the win rate you need just to break even:
+`break-even = 100 / (100 + payout)`.
+
+| Payout | Win rate needed to break even |
+|---|---|
+| 92% | 52.1% |
+| 85% | 54.1% |
+| 68% | 59.5% |
+
+The same strategy, on the same signals, is profitable on a 92% pair and losing
+on a 68% one. `scan_assets.py` lists every asset's live payout, whether it is
+open, and the expiries it offers, then names the best-paying open pair. Payouts
+move through the day — re-run it before a session. It is read-only (chart
+socket), so it can never touch your balance.
 
 ## Telegram commands (optional)
 
