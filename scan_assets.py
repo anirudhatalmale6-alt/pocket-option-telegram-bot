@@ -6,8 +6,9 @@ Show Pocket Option's live payouts, and what win rate each one demands.
     python scan_assets.py --expiry 60     # only pairs offering a 60s expiry
     python scan_assets.py --kind stock
 
-Reads PO_SSID / PO_SESSION from your .env. This only ever reads — it uses the
-chart socket, which cannot place trades or see your balance.
+No account needed — Pocket Option serves the asset table to anyone. It uses your
+PO_SSID if you have one set, but works fine without. Either way it only ever
+reads; it cannot place a trade or see your balance.
 
 Read the "need" column as: the percentage of trades that must win before you
 make a penny. Trading a 68% payout instead of a 92% one raises that bar from
@@ -26,10 +27,6 @@ from core.config import BotConfig
 
 async def main(kind: str, show_all: bool, expiry: int | None, closed: bool) -> None:
     cfg = BotConfig.from_env()
-    if not cfg.po_ssid:
-        print("No PO_SSID / PO_SESSION in .env — see docs/SETUP.md.")
-        return
-
     print("Fetching live asset table from Pocket Option...\n")
     assets = await fetch_assets(cfg.po_ssid, demo=cfg.po_demo)
 

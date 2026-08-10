@@ -18,9 +18,11 @@ This module reads Pocket Option's live asset table straight off their chart
 WebSocket and reports, per asset: payout, whether it is currently open, and the
 expiries it offers. `best_asset()` then picks the highest-paying open pair.
 
-It deliberately uses the *chart* socket, which is read-only — it cannot place a
-trade or read a balance — so this works even with a chart-only token and never
-risks touching your account.
+It needs no account at all. Pocket Option serves the asset feed to any client
+that completes the socket handshake, so this never touches — and cannot touch —
+your balance or your trades. Verified by control test: a deliberately invalid
+session gets exactly the same asset table, while a genuine one additionally
+gets a `successauth` event that this module neither needs nor uses.
 """
 
 from __future__ import annotations
@@ -46,6 +48,11 @@ _HEADERS = {
     "User-Agent": ("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"),
 }
+
+# Sent when no SSID is supplied. The server drops a socket that never
+# authenticates at all, but accepts any well-formed frame for the public asset
+# feed — so this is what lets scan_assets.py run with no account.
+_ANON_AUTH = ('42["auth",{"session":"anonymous","isDemo":1,"uid":0,"platform":2}]')
 
 
 @dataclass
@@ -93,8 +100,8 @@ async def fetch_assets(ssid: str = "", demo: bool = True,
     """
     Connect, authenticate, and return the live asset table.
 
-    `ssid` is the raw auth frame from the browser. The chart socket accepts the
-    chart token too, so this works even when you only have that one.
+    `ssid` is optional — leave it empty and an anonymous frame is sent instead.
+    The asset table is identical either way.
     """
     if not _HAVE_WS:
         raise RuntimeError("The `websockets` package is required: pip install websockets")
@@ -123,8 +130,7 @@ async def fetch_assets(ssid: str = "", demo: bool = True,
             elif msg.startswith("0{"):
                 await ws.send("40")
             elif msg.startswith("40"):
-                if ssid:
-                    await ws.send(ssid)
+                await ws.send(ssid or _ANON_AUTH)
             elif msg == "2":
                 await ws.send("3")          # engine.io keepalive
             elif msg.startswith("451-"):
