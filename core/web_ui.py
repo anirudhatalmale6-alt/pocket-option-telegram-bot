@@ -645,7 +645,11 @@ PAGE = r"""<!doctype html>
       <div class="stat"><div class="k">Profit / Loss</div><div class="v" id="s-pnl">—</div></div>
       <div class="stat"><div class="k">Win rate</div><div class="v" id="s-wr">—</div><div class="sub" id="s-be"></div></div>
       <div class="stat"><div class="k">Wins / Losses</div><div class="v" id="s-wl">—</div></div>
-      <div class="stat"><div class="k">Balance</div><div class="v" id="s-bal">—</div></div>
+      <!-- The balance says whose money it is, on the tile. A PRACTICE badge in
+           the header was not enough: the client watched a simulated $997.20 for
+           an hour believing it was his real Pocket Option demo balance. -->
+      <div class="stat"><div class="k">Balance</div><div class="v" id="s-bal">—</div>
+        <div class="sub" id="s-bal-sub"></div></div>
     </div>
   </div>
 
@@ -907,7 +911,19 @@ function render(s){
     be.textContent = 'need ' + s.breakeven.toFixed(1) + '% to break even — ' + decided + ' trades';
   }
   document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
-  document.getElementById('s-bal').textContent = s.balance === null ? '—' : '$' + s.balance.toFixed(2);
+  const bal = document.getElementById('s-bal');
+  bal.textContent = s.balance === null ? '—' : '$' + s.balance.toFixed(2);
+  // Never let an invented number look like the user's own money.
+  const balSub = document.getElementById('s-bal-sub');
+  if (s.mode === 'PRACTICE'){
+    bal.className = 'v';
+    balSub.textContent = 'PRETEND money — not your Pocket Option balance. ' +
+                         'Nothing here has been sent to Pocket Option.';
+  } else if (s.mode === 'DEMO'){
+    balSub.textContent = 'your Pocket Option DEMO balance — practice money';
+  } else {
+    balSub.textContent = 'your REAL Pocket Option money';
+  }
 
   // Rebuild only when the list actually changes, so dropping a new file into
   // strategies/ makes it appear on its own without stealing focus every 2s.

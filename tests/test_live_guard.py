@@ -126,3 +126,21 @@ def test_a_plugin_can_be_selected_from_the_panel():
 def test_an_unknown_strategy_is_still_rejected():
     web = _panel(paper=True, demo=True)
     assert web.command({"action": "settings", "strategy": "plugin:nope"})["ok"] is False
+
+
+# ----------------------------------------- whose money is on the balance tile
+def test_practice_demo_and_live_are_three_distinct_modes():
+    # These drive the label under the balance. The client watched a simulated
+    # $997.20 for an hour believing it was his real Pocket Option demo money,
+    # so the three cases must never collapse into each other.
+    assert _panel(paper=True, demo=True).state()["mode"] == "PRACTICE"
+    assert _panel(paper=False, demo=True).state()["mode"] == "DEMO"
+    assert _panel(paper=False, demo=False).state()["mode"] == "LIVE"
+
+
+def test_connecting_an_account_stops_the_mode_reading_practice():
+    """The badge flipping PRACTICE -> DEMO is the signal that it went real."""
+    web = _panel(paper=True, demo=True)
+    assert web.state()["mode"] == "PRACTICE"
+    web.paper = False
+    assert web.state()["mode"] == "DEMO"
