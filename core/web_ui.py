@@ -57,6 +57,8 @@ class WebInterface:
         self.paper = False          # True when running without a real account
         self.practice_note = ""     # what KIND of practice data, set by main.py
         self._log: List[dict] = []  # newest-last ring buffer of event lines
+        self._assets_cache: List[dict] = []   # live payout table
+        self._assets_at = 0.0                 # when we last fetched it
         self._lock = threading.Lock()
         self._server: Optional[ThreadingHTTPServer] = None
 
@@ -120,6 +122,47 @@ class WebInterface:
             "trades": trades,
             "log": log,
         }
+
+    # -------------------------------------------------------------- payouts
+    def payouts(self) -> dict:
+        """
+        Live payout table, so the pair can be chosen from the panel.
+
+        This matters more than any strategy setting: the payout sets the win
+        rate you have to beat (100 / (100 + payout)), and it MOVES — EURUSD_otc
+        paid 68% one day and 92% the next. A number I quote in a message goes
+        stale; a button does not. Needs no account: the asset table is public.
+
+        Cached briefly because Pocket Option starts refusing connections if you
+        reconnect repeatedly.
+        """
+        now = time.time()
+        with self._lock:
+            if self._assets_cache and now - self._assets_at < 120:
+                return {"ok": True, "cached": True, "assets": self._assets_cache}
+
+        try:
+            import asyncio
+
+            from .assets import fetch_assets
+            assets = asyncio.run(fetch_assets())
+        except Exception as exc:
+            return {"ok": False, "message": f"Could not reach Pocket Option: {exc}",
+                    "assets": []}
+
+        rows = [{
+            "symbol": a.symbol,
+            "name": a.name,
+            "payout": a.payout,
+            "breakeven": round(a.breakeven_win_rate, 1),
+            "min_expiry": a.min_expiry,
+        } for a in assets if a.is_open and a.payout > 0]
+        rows.sort(key=lambda r: -r["payout"])
+
+        with self._lock:
+            self._assets_cache = rows
+            self._assets_at = now
+        return {"ok": True, "cached": False, "assets": rows}
 
     # ------------------------------------------------------------ commands
     def command(self, body: dict) -> dict:
@@ -199,6 +242,16 @@ class WebInterface:
                     return {"ok": False, "message": "Asset cannot be empty."}
                 c.asset = asset
                 changed.append(f"asset {asset}")
+
+            if "payout" in body:
+                # Sent when a pair is picked from the live payout list, so the
+                # break-even line on screen matches the pair actually traded.
+                v = float(body["payout"])
+                if not 1 <= v <= 100:
+                    return {"ok": False, "message": "Payout must be between 1 and 100."}
+                c.payout_percent = v
+                changed.append(f"payout {v:.0f}% (break-even "
+                               f"{100.0 * 100.0 / (100.0 + v):.1f}%)")
 
             if "strategy" in body:
                 mode = str(body["strategy"])
@@ -283,6 +336,11 @@ class WebInterface:
                         self._json(401, {"error": "unauthorised"})
                         return
                     self._json(200, iface.state())
+                elif path == "/api/assets":
+                    if not self._authed():
+                        self._json(401, {"error": "unauthorised"})
+                        return
+                    self._json(200, iface.payouts())
                 else:
                     self._send(404, b"Not found", "text/plain")
 
@@ -422,7 +480,8 @@ PAGE = r"""<!doctype html>
     <h2>Settings</h2>
     <div class="grid">
       <div><label for="f-strategy">Strategy</label><select id="f-strategy"></select></div>
-      <div><label for="f-asset">Asset</label><input id="f-asset" placeholder="EURUSD_otc"></div>
+      <div><label for="f-asset">Asset</label><input id="f-asset" placeholder="EURUSD_otc">
+        <div class="sub"><a href="#" onclick="loadPayouts();return false;">Show live payouts &rarr;</a></div></div>
       <div><label for="f-stake">Stake per trade ($)</label><input id="f-stake" type="number" step="0.01" min="0.01"></div>
       <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div></div>
       <div><label for="f-timeframe">Candle size (seconds)</label><input id="f-timeframe" type="number" min="5" step="1"><div class="sub">Can be shorter than the expiry, e.g. 30</div></div>
@@ -439,6 +498,14 @@ PAGE = r"""<!doctype html>
       <button class="ghost" onclick="saveSettings()">Save settings</button>
     </div>
     <div class="note">Changes apply on the next candle — no restart needed.</div>
+
+    <!-- Live payout table. Payouts move day to day and set the win rate you
+         have to beat, so this has to be looked up, never remembered. -->
+    <div id="payouts" style="display:none;margin-top:16px">
+      <h2>Live payouts — click a pair to use it</h2>
+      <div class="note" id="payout-note">Loading…</div>
+      <div style="overflow-x:auto"><table id="payout-table"></table></div>
+    </div>
   </div>
 
   <div class="card">
@@ -508,6 +575,42 @@ function saveSettings(){
     mg_mult:  document.getElementById('f-mgmult').value,
     mg_steps: document.getElementById('f-mgsteps').value
   });
+}
+
+// ---- live payouts -------------------------------------------------------
+// The payout decides the win rate you must beat: 100 / (100 + payout). It
+// changes day to day, so it is fetched, never hard-coded into the page.
+async function loadPayouts(){
+  const box  = document.getElementById('payouts');
+  const note = document.getElementById('payout-note');
+  box.style.display = 'block';
+  note.textContent = 'Asking Pocket Option… this takes a few seconds.';
+  document.getElementById('payout-table').innerHTML = '';
+  try{
+    const r = await fetch('/api/assets', {headers:headers()});
+    if (r.status === 401){ askPass(); return; }
+    const j = await r.json();
+    if (!j.ok){ note.textContent = j.message || 'Could not load payouts.'; return; }
+    const rows = j.assets || [];
+    if (!rows.length){ note.textContent = 'No pairs are open right now.'; return; }
+    note.textContent = rows.length + ' pairs open. "Need" is the win rate that just ' +
+                       'breaks even at that payout — lower is easier.';
+    document.getElementById('payout-table').innerHTML =
+      '<tr><th>Payout</th><th>Need</th><th>Pair</th><th></th></tr>' +
+      rows.map(a =>
+        '<tr><td><b>' + a.payout + '%</b></td><td>' + a.breakeven.toFixed(1) + '%</td>' +
+        '<td>' + a.name + '</td>' +
+        '<td><button class="ghost" onclick="pickAsset(\'' + a.symbol + '\',' + a.payout +
+        ')">Use ' + a.symbol + '</button></td></tr>'
+      ).join('');
+  }catch(e){ note.textContent = 'Could not reach the bot.'; }
+}
+
+function pickAsset(symbol, payout){
+  // Set the pair AND its payout together, so the break-even figure on the
+  // Today card is the one that actually applies to what is being traded.
+  document.getElementById('f-asset').value = symbol;
+  cmd({action:'settings', asset:symbol, payout:payout});
 }
 
 const money = n => (n >= 0 ? '+' : '') + '$' + n.toFixed(2);

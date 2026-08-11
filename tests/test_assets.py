@@ -68,3 +68,74 @@ def test_best_asset_can_ask_for_non_otc():
 
 def test_best_asset_returns_none_when_nothing_matches():
     assert best_asset(_parse(ROWS), kind="commodity") is None
+
+
+# --------------------------------------------------------------- panel rows
+def _fake_fetch(rows):
+    """Stand in for the live socket call, so these tests never touch the network."""
+    async def _fetch(*_args, **_kwargs):
+        return list(rows)
+    return _fetch
+
+
+def test_panel_payout_rows_are_sorted_and_filtered(monkeypatch):
+    """
+    The panel's payout list must put the best-paying pairs first and hide the
+    closed ones — picking a shut pair from a stale list is a dead bot.
+    """
+    from core.config import BotConfig
+    from core.web_ui import WebInterface
+
+    rows = [
+        AssetInfo("LOW_otc", "Low", "currency", 60, True, [60]),
+        AssetInfo("SHUT_otc", "Shut", "currency", 95, False, [60]),
+        AssetInfo("BEST_otc", "Best", "currency", 92, True, [60]),
+        AssetInfo("ZERO_otc", "Zero", "currency", 0, True, [60]),
+    ]
+    web = WebInterface(BotConfig())
+    monkeypatch.setattr("core.assets.fetch_assets", _fake_fetch(rows))
+
+    out = web.payouts()
+    assert out["ok"] is True
+    symbols = [r["symbol"] for r in out["assets"]]
+    assert symbols == ["BEST_otc", "LOW_otc"], "closed and payout-less pairs must be dropped"
+    assert out["assets"][0]["breakeven"] == 52.1
+
+
+def test_panel_payouts_are_cached(monkeypatch):
+    """Pocket Option refuses rapid reconnects, so a second click must not refetch."""
+    from core.config import BotConfig
+    from core.web_ui import WebInterface
+
+    calls = []
+
+    def _counting(rows):
+        fetch = _fake_fetch(rows)
+
+        async def wrapper(*a, **kw):
+            calls.append(1)
+            return await fetch(*a, **kw)
+        return wrapper
+
+    web = WebInterface(BotConfig())
+    monkeypatch.setattr("core.assets.fetch_assets",
+                        _counting([AssetInfo("A_otc", "A", "currency", 92, True, [60])]))
+    web.payouts()
+    second = web.payouts()
+    assert len(calls) == 1
+    assert second["cached"] is True
+
+
+def test_panel_reports_a_failure_instead_of_pretending(monkeypatch):
+    from core.config import BotConfig
+    from core.web_ui import WebInterface
+
+    async def _boom(*a, **kw):
+        raise RuntimeError("network down")
+
+    web = WebInterface(BotConfig())
+    monkeypatch.setattr("core.assets.fetch_assets", _boom)
+    out = web.payouts()
+    assert out["ok"] is False
+    assert "network down" in out["message"]
+    assert out["assets"] == []
