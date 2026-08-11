@@ -28,6 +28,12 @@ adjustable live without a restart.
   (Bill Williams + RSI), `rsi` (fast RSI reversal, built for 30s candles),
   `pullback` (EMA trend + RSI/Stochastic dip), plus three pure-trend modes —
   `linreg`, `ema`, `donchian`. All thresholds tunable.
+- **Drop-in strategies**: put a `.py` file in `strategies/` and it appears in the
+  panel's dropdown by itself — no code to edit, no restart. One function,
+  `evaluate(candles)`. See [strategies/README.md](strategies/README.md).
+- **A real-money guard**: on a funded account the panel shows a standing warning
+  and START asks once, with the break-even maths on screen at the moment of the
+  decision. Demo and practice are one press, as before.
 - **Telegram control (optional)**: `/start` `/stop` `/status`, quick setters (`/stake`, `/expiry`, `/asset`), martingale & risk commands, a generic `/set field value`, plus inline Start/Stop/Status buttons.
 - **Instant notifications** on every entry, result, error and reconnect.
 - **Money management**: base stake, optional martingale (multiplier + max steps), daily loss cap and daily profit target.
@@ -132,6 +138,24 @@ socket), so it can never touch your balance.
 | `/set <field.path> <value>` | change any setting, e.g. `/set strategy.rsi_oversold 25` |
 | `/reset` | reset today's PnL + martingale |
 | `/help` | list commands |
+
+## Watch it first
+
+`docs/panel_walkthrough.mp4` is a 95-second tour of the panel: the strategy
+list, live payouts, START, the "Watching" line, and where the break-even figure
+appears. No sound — it is captioned.
+
+## Connecting your account
+
+Step by step, including where the session token lives and why `PO_DEMO=true`
+should stay `true` for now: [docs/GO_LIVE.md](docs/GO_LIVE.md).
+
+## Before risking money
+
+[docs/RESULTS.md](docs/RESULTS.md) — 28 strategy/timeframe combinations measured
+against real EUR/USD history. None of them showed a statistically real edge, and
+that includes a 70% figure quoted earlier that turned out to be 11 trades. Read
+it before switching `PO_DEMO` to `false`.
 
 ## Tests
 

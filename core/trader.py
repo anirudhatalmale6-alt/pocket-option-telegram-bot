@@ -29,6 +29,7 @@ from .custom_strategy import CustomStrategy
 from .alligator_strategy import AlligatorStrategy
 from .rsi_strategy import RsiStrategy
 from .confluence_strategy import ConfluenceStrategy
+from . import plugins
 
 
 def build_evaluator(config: BotConfig):
@@ -38,6 +39,13 @@ def build_evaluator(config: BotConfig):
     interchangeably. Switchable live from Telegram.
     """
     mode = config.strategy_mode
+    if mode.startswith(plugins.PREFIX):
+        # A strategy file someone dropped into strategies/. If the file has been
+        # deleted since it was picked, fall through to the built-ins rather than
+        # trading on nothing.
+        built = plugins.build(mode)
+        if built is not None:
+            return built
     if mode == "custom":
         return CustomStrategy(config.custom)
     if mode == "alligator":

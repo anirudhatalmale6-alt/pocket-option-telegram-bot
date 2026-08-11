@@ -60,6 +60,8 @@ class WebInterface:
         self._log: List[dict] = []  # newest-last ring buffer of event lines
         self._assets_cache: List[dict] = []   # live payout table
         self._assets_at = 0.0                 # when we last fetched it
+        self._plugins_cache: List[tuple] = [] # strategy files found in strategies/
+        self._plugins_at = 0.0
         self._lock = threading.Lock()
         self._server: Optional[ThreadingHTTPServer] = None
 
@@ -78,6 +80,30 @@ class WebInterface:
         print(f"[bot] {text}", flush=True)
 
     # --------------------------------------------------------------- state
+    def _plugin_choices(self) -> List[tuple]:
+        """
+        Strategy files from strategies/, cached for a few seconds.
+
+        Discovery imports every file, so doing it on each 2-second poll would be
+        wasteful; caching it means a newly added file shows up within seconds
+        without a restart, which is the point of the folder.
+        """
+        now = time.time()
+        if now - self._plugins_at < 5.0:
+            return self._plugins_cache
+        try:
+            from . import plugins
+            self._plugins_cache = plugins.choices()
+        except Exception as exc:
+            self._plugins_cache = []
+            print(f"[bot] could not scan strategies/: {exc}", flush=True)
+        self._plugins_at = now
+        return self._plugins_cache
+
+    def _is_live(self) -> bool:
+        """Real money: a genuine account (not practice) that is not on demo."""
+        return not self.paper and not self.config.po_demo
+
     def state(self) -> dict:
         c = self.config
         r = self.risk
@@ -98,6 +124,7 @@ class WebInterface:
             "running": c.running,
             "connected": self.connected,
             "mode": "PRACTICE" if self.paper else ("DEMO" if c.po_demo else "LIVE"),
+            "is_live": self._is_live(),
             "has_token": bool(c.po_ssid) or self.paper,
             "practice_note": self.practice_note,
             # Proof of life. A selective strategy sitting out looks exactly like
@@ -109,7 +136,10 @@ class WebInterface:
             "expiry": c.expiry_seconds,
             "timeframe": c.candle_timeframe,
             "strategy": c.strategy_mode,
-            "strategies": [{"id": k, "label": v} for k, v in STRATEGY_CHOICES],
+            # Built-ins first, then anything dropped into strategies/. Rescanned
+            # on every poll so a new file appears without restarting the panel.
+            "strategies": [{"id": k, "label": v}
+                           for k, v in STRATEGY_CHOICES + self._plugin_choices()],
             "stake": c.risk.base_stake,
             "loss_cap": c.risk.daily_loss_cap,
             "profit_target": c.risk.daily_profit_target,
@@ -179,6 +209,26 @@ class WebInterface:
         if action == "start":
             if not c.po_ssid and not self.paper:
                 return {"ok": False, "message": "No Pocket Option token set — cannot trade."}
+            # Real money needs one deliberate extra press. Not paperwork: no
+            # strategy in this bot has yet beaten its break-even line on real
+            # data (docs/RESULTS.md, 0 of 28 combinations), so pressing START on
+            # a funded account is a decision to fund an experiment. The panel
+            # sends confirm_live only after showing that in plain words.
+            if self._is_live() and not body.get("confirm_live"):
+                need = 100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent else 100.0
+                return {"ok": False, "needs_live_confirm": True,
+                        "message": (
+                            f"This is your REAL money account.\n\n"
+                            f"At a {c.payout_percent:.0f}% payout you must win "
+                            f"{need:.1f}% of trades just to break even. No strategy "
+                            f"in this bot has yet proven it can do that — 0 of 28 "
+                            f"tested combinations showed a real edge (docs/RESULTS.md).\n\n"
+                            f"Stake ${c.risk.base_stake:.2f}, stops after losing "
+                            f"${c.risk.daily_loss_cap:.2f} today"
+                            f"{', MARTINGALE IS ON' if c.martingale.enabled else ''}.\n\n"
+                            f"Start trading real money anyway?")}
+            if self._is_live():
+                self.log("⚠ START on a LIVE account — real money is now at risk.")
             c.running = True
             self.log("▶ START pressed from the control panel.")
             # Say what it is doing and roughly how long a quiet spell is normal.
@@ -261,7 +311,9 @@ class WebInterface:
 
             if "strategy" in body:
                 mode = str(body["strategy"])
-                if mode not in [k for k, _ in STRATEGY_CHOICES]:
+                allowed = [k for k, _ in STRATEGY_CHOICES] + \
+                          [k for k, _ in self._plugin_choices()]
+                if mode not in allowed:
                     return {"ok": False, "message": f"Unknown strategy '{mode}'."}
                 c.strategy_mode = mode
                 changed.append(f"strategy {mode}")
@@ -404,6 +456,9 @@ PAGE = r"""<!doctype html>
   .pill.off{background:rgba(239,68,68,.12);color:var(--red);border-color:rgba(239,68,68,.35)}
   .pill.demo{background:rgba(59,130,246,.15);color:var(--blue);border-color:rgba(59,130,246,.4)}
   .pill.live{background:rgba(245,158,11,.15);color:var(--amber);border-color:rgba(245,158,11,.4)}
+  #livebar{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.5);
+           border-radius:10px;padding:12px 14px;margin:0 0 12px;
+           font-size:14px;line-height:1.5;color:#fecaca}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:16px;margin-bottom:16px}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;
@@ -469,6 +524,8 @@ PAGE = r"""<!doctype html>
       <button class="halt" id="b-stop"  onclick="cmd({action:'stop'})">■ STOP</button>
       <button class="ghost" onclick="if(confirm('Reset today\'s profit/loss counters?'))cmd({action:'reset'})">Reset today</button>
     </div>
+    <!-- Real money deserves a standing reminder, not a one-off dialog. -->
+    <div id="livebar" style="display:none"></div>
     <div class="note" id="hint"></div>
     <!-- Live proof the bot is awake while a picky strategy sits out. -->
     <div class="note" id="watch" style="display:none"></div>
@@ -559,6 +616,13 @@ async function cmd(body){
     const r = await fetch('/api/cmd', {method:'POST', headers:headers(), body:JSON.stringify(body)});
     if (r.status === 401){ askPass(); return; }
     const j = await r.json();
+    // Real money gets one deliberate extra press, with the break-even maths on
+    // screen at the moment of the decision rather than buried in a doc.
+    if (j.needs_live_confirm){
+      if (confirm(j.message)) return cmd(Object.assign({}, body, {confirm_live:true}));
+      toast('Not started. Switch PO_DEMO=true in your .env to practise safely.');
+      return;
+    }
     toast(j.message, !j.ok);
     refresh();
   }catch(e){ toast('Connection to the bot was lost.', true); }
@@ -631,7 +695,7 @@ function setField(id, val){
   if (el.type === 'checkbox') el.checked = !!val; else el.value = val;
 }
 
-let builtStrategies = false;
+let builtStrategies = '';   // ids currently in the dropdown, '|'-joined
 
 function render(s){
   const pr = document.getElementById('p-run');
@@ -653,6 +717,19 @@ function render(s){
     'DEMO':     'Demo mode — practice money only, your real balance is untouched.',
     'LIVE':     'LIVE mode — real money is at risk.'
   };
+  // Standing live-money warning. The single most expensive thing this panel can
+  // do is let real trading feel the same as practice, so it must not look it.
+  const lb2 = document.getElementById('livebar');
+  if (s.is_live){
+    lb2.style.display = 'block';
+    lb2.innerHTML = '<b>REAL MONEY</b> — you need <b>' + s.breakeven.toFixed(1) +
+      '%</b> wins at this ' + s.payout + '% payout just to break even. No strategy ' +
+      'here has proven it can do that yet (0 of 28 tested — see docs/RESULTS.md). ' +
+      'Set PO_DEMO=true in your .env to practise instead.';
+  } else {
+    lb2.style.display = 'none';
+  }
+
   document.getElementById('hint').textContent = s.has_token
     ? ((s.mode === 'PRACTICE' && s.practice_note) ? s.practice_note : hints[s.mode])
     : 'No Pocket Option token loaded yet, so trading is disabled.';
@@ -697,10 +774,13 @@ function render(s){
   document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
   document.getElementById('s-bal').textContent = s.balance === null ? '—' : '$' + s.balance.toFixed(2);
 
-  if (!builtStrategies){
+  // Rebuild only when the list actually changes, so dropping a new file into
+  // strategies/ makes it appear on its own without stealing focus every 2s.
+  const stratKey = s.strategies.map(x => x.id).join('|');
+  if (stratKey !== builtStrategies){
     const sel = document.getElementById('f-strategy');
     sel.innerHTML = s.strategies.map(x => `<option value="${x.id}">${x.label}</option>`).join('');
-    builtStrategies = true;
+    builtStrategies = stratKey;
   }
   setField('f-strategy', s.strategy);
   setField('f-asset', s.asset);
