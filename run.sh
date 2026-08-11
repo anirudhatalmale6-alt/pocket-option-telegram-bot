@@ -41,6 +41,23 @@ fi
 # `|| true` matters: with `set -e` plus `pipefail`, a grep that simply finds
 # nothing (no .env, or no WEB_PORT line in it) would abort the whole script
 # before the bot ever starts — and print nothing at all while doing it.
+# Say so when this copy is out of date. Nearly every "the thing you described
+# isn't on my screen" turns out to be old code, and there was previously no way
+# to tell from the panel — you just saw a feature missing and assumed it was
+# broken. Never blocks startup: short timeout, and silence on any failure,
+# because being offline must not stop the bot from running.
+if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+    if timeout 6 git fetch --quiet 2>/dev/null; then
+        BEHIND=$(git rev-list --count HEAD..@{u} 2>/dev/null || echo 0)
+        if [ "${BEHIND:-0}" -gt 0 ] 2>/dev/null; then
+            echo "! Your copy is ${BEHIND} update(s) behind."
+            echo "  Press Ctrl+C and run:  bash update.sh"
+            echo "  Carrying on with the version you have..."
+            echo
+        fi
+    fi
+fi
+
 PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
 PORT=${PORT:-8080}
 
