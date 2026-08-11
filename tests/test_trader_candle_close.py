@@ -128,3 +128,39 @@ def test_empty_candle_list_does_not_crash_the_loop():
     trader = _trader(broker)
     asyncio.run(_run_briefly(trader, 0.05))
     assert broker.trades == 0
+
+
+# ------------------------------------------------------- proof of life
+class _NeverTrades:
+    def evaluate(self, candles):
+        return Signal(Direction.NONE, "0/3 agree (none agree) — need 2")
+
+
+def test_a_silent_strategy_still_reports_that_it_is_working():
+    """
+    The client watched confluence sit out for a minute and reasonably asked why
+    nothing had happened. A picky strategy and a crashed one look identical on a
+    blank screen, so the trader must publish what it checked and why it passed.
+    """
+    broker = _FakeBroker(_candles(10), partial=True)
+    trader = _trader(broker)
+    trader.strategy = _NeverTrades()
+
+    assert trader.checks == 0
+    asyncio.run(_run_briefly(trader, 0.1))
+
+    assert broker.trades == 0
+    assert trader.checks >= 1, "the bot must record that it looked at the candle"
+    assert trader.last_check_ts > 0
+    assert "need 2" in trader.last_reason, "the reason must say what was missing"
+
+
+def test_confluence_explains_itself_when_it_sits_out():
+    """'not enough agreement' tells you nothing; the count and who voted do."""
+    from core.confluence_strategy import ConfluenceSettings, ConfluenceStrategy
+
+    flat = [Candle(float(i), 1.0, 1.0, 1.0, 1.0) for i in range(200)]
+    sig = ConfluenceStrategy(ConfluenceSettings(min_agree=2)).evaluate(flat)
+    assert sig.direction is Direction.NONE
+    assert "/3 agree" in sig.reason
+    assert "need 2" in sig.reason

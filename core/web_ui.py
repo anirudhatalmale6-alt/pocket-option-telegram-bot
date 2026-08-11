@@ -51,6 +51,7 @@ class WebInterface:
         self.port = port
         self.password = password
         self.risk = None            # set by main() once the Trader exists
+        self.trader = None          # ditto — read for the "still watching" line
         self.reset_cb = None
         self.balance: Optional[float] = None
         self.connected = False
@@ -99,6 +100,11 @@ class WebInterface:
             "mode": "PRACTICE" if self.paper else ("DEMO" if c.po_demo else "LIVE"),
             "has_token": bool(c.po_ssid) or self.paper,
             "practice_note": self.practice_note,
+            # Proof of life. A selective strategy sitting out looks exactly like
+            # a crashed bot, so show what it checked, when, and why it passed.
+            "checks": getattr(self.trader, "checks", 0),
+            "last_check": getattr(self.trader, "last_check_ts", 0.0),
+            "last_reason": getattr(self.trader, "last_reason", ""),
             "asset": c.asset,
             "expiry": c.expiry_seconds,
             "timeframe": c.candle_timeframe,
@@ -464,6 +470,8 @@ PAGE = r"""<!doctype html>
       <button class="ghost" onclick="if(confirm('Reset today\'s profit/loss counters?'))cmd({action:'reset'})">Reset today</button>
     </div>
     <div class="note" id="hint"></div>
+    <!-- Live proof the bot is awake while a picky strategy sits out. -->
+    <div class="note" id="watch" style="display:none"></div>
   </div>
 
   <div class="card">
@@ -648,6 +656,24 @@ function render(s){
   document.getElementById('hint').textContent = s.has_token
     ? ((s.mode === 'PRACTICE' && s.practice_note) ? s.practice_note : hints[s.mode])
     : 'No Pocket Option token loaded yet, so trading is disabled.';
+
+  // "Still watching" line. Without it, a strategy that is deliberately picky is
+  // indistinguishable from a bot that has died, and the only honest way to tell
+  // them apart is to show the work: candles checked, when, and why it passed.
+  const watch = document.getElementById('watch');
+  if (s.running && s.checks > 0){
+    const ago = Math.max(0, Math.round(Date.now()/1000 - s.last_check));
+    watch.style.display = 'block';
+    watch.textContent = 'Watching — ' + s.checks + ' candle' + (s.checks === 1 ? '' : 's') +
+      ' checked, last ' + (ago < 2 ? 'just now' : ago + 's ago') +
+      (s.last_reason ? '. No trade: ' + s.last_reason : '') +
+      '. Sitting out is a decision, not a fault.';
+  } else if (s.running){
+    watch.style.display = 'block';
+    watch.textContent = 'Watching — waiting for the first candle to close.';
+  } else {
+    watch.style.display = 'none';
+  }
 
   const pnl = document.getElementById('s-pnl');
   pnl.textContent = money(s.pnl);

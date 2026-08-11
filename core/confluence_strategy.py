@@ -58,4 +58,9 @@ class ConfluenceStrategy:
             return Signal(Direction.CALL, f"confluence {calls}/3 agree ({', '.join(who)})")
         if puts >= need and puts > calls:
             return Signal(Direction.PUT, f"confluence {puts}/3 agree ({', '.join(who)})")
-        return Signal(Direction.NONE, "not enough agreement")
+        # Say WHO agreed even when we sit out. "not enough agreement" on a blank
+        # screen is indistinguishable from a dead bot; "1/3 agree (rsi up), need
+        # 2" shows it is reading the market and simply unconvinced.
+        best = max(calls, puts)
+        detail = f" ({', '.join(who)})" if who else " (none agree)"
+        return Signal(Direction.NONE, f"{best}/3 agree{detail} — need {need}")

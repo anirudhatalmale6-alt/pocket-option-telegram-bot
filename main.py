@@ -149,6 +149,7 @@ async def run(paper: bool) -> None:
         # The panel needs the live risk manager to show PnL and the trade list.
         web.risk = trader.risk
         web.reset_cb = trader.risk.reset_day
+        web.trader = trader
         web.paper = practice
         web.practice_note = practice_note
         web.start()

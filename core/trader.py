@@ -16,6 +16,7 @@ next cycle because everything reads from the shared config object.
 from __future__ import annotations
 
 import asyncio
+import time
 import traceback
 from typing import Awaitable, Callable, Optional
 
@@ -69,6 +70,12 @@ class Trader:
         self._status_cb = status_cb
         self._active = False           # a trade is currently open
         self._stop = False             # hard stop for shutdown
+        # Proof of life for the panel. A selective strategy that is working
+        # perfectly looks exactly like a crashed one when the screen is blank,
+        # so we publish what was checked, when, and why it passed.
+        self.checks = 0                # candles evaluated since start
+        self.last_check_ts = 0.0       # when the newest candle was judged
+        self.last_reason = ""          # why the last candle was not traded
 
     def _status(self, connected: bool, balance: Optional[float] = None) -> None:
         """Tell the UI whether we are connected (never fatal if it fails)."""
@@ -175,6 +182,9 @@ class Trader:
             judged = stamp
 
             signal = self.strategy.evaluate(candles)
+            self.checks += 1
+            self.last_check_ts = time.time()
+            self.last_reason = signal.reason
 
             if signal.direction is Direction.NONE:
                 await asyncio.sleep(cfg.poll_interval)
