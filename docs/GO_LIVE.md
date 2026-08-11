@@ -4,6 +4,28 @@ Read the last section first if you are in a hurry.
 
 ---
 
+## The easy way: do it on the control panel
+
+Start the bot (`bash run.sh --paper`), open the panel, and use the **Your Pocket
+Option account** card near the top:
+
+1. Paste the `ci_session` cookie (step 1 below explains where to find it).
+2. Put your account id in the second box.
+3. Leave **Demo** ticked.
+4. Press **Save & connect**.
+
+That writes the `.env` file for you, with the right permissions, and reconnects
+without a restart. You never have to open a hidden file or use a text editor.
+
+If you paste the wrong token by mistake — there are two, and they look alike —
+it tells you which one you grabbed and what to look for instead, *before* saving
+anything.
+
+The rest of this page is the manual route, and the reasoning you should read
+before switching to real money either way.
+
+---
+
 ## 1. Get your session token
 
 The bot signs in the same way your browser already has: it borrows the session

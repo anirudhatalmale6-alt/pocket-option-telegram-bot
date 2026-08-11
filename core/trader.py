@@ -78,6 +78,8 @@ class Trader:
         self._status_cb = status_cb
         self._active = False           # a trade is currently open
         self._stop = False             # hard stop for shutdown
+        self._pending_broker = None    # set by swap_broker(), installed on the
+                                       # next cycle once the old one is closed
         # Proof of life for the panel. A selective strategy that is working
         # perfectly looks exactly like a crashed one when the screen is blank,
         # so we publish what was checked, when, and why it passed.
@@ -104,13 +106,29 @@ class Trader:
             pass
 
     # ------------------------------------------------------------------ run
+    def swap_broker(self, broker: Broker) -> None:
+        """
+        Trade against a different account from the next cycle, no restart.
+
+        The control panel calls this when the Pocket Option token is entered on
+        the page. Requiring a restart there would mean sending the client back
+        to the terminal for the one step he is most likely to fumble, which is
+        the whole reason the panel took over the job.
+        """
+        self._pending_broker = broker
+        self.config.running = False   # never carry an open position across accounts
+
     async def run(self) -> None:
         """Long-lived loop. Reconnects on error; respects config.running."""
         backoff = 2
         while not self._stop:
+            # Bind the broker for this whole attempt. Reading self.broker in the
+            # finally would close whichever broker happened to be installed by
+            # then — i.e. a freshly swapped one, immediately after connecting it.
+            broker = self.broker
             try:
-                await self.broker.connect()
-                bal = await self.broker.balance()
+                await broker.connect()
+                bal = await broker.balance()
                 mode = "DEMO" if self.config.po_demo else "LIVE"
                 self._status(True, bal)
                 await self.notify(f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
@@ -126,7 +144,16 @@ class Trader:
                 backoff = min(backoff * 2, 60)  # exponential backoff, capped
             finally:
                 self._status(False)
-                await self.broker.close()
+                await broker.close()
+            # Install a broker handed over while the old one was live. Done here,
+            # after the old one is closed, so two sockets are never open at once.
+            if self._pending_broker is not None:
+                self.broker = self._pending_broker
+                self._pending_broker = None
+                self.checks = 0            # counters belong to the old account
+                self.last_reason = ""
+                backoff = 2
+                await self.notify("Account details updated — reconnecting.")
 
     def _closed_candles(self, candles):
         """
@@ -152,6 +179,11 @@ class Trader:
         judged: Optional[float] = None
 
         while not self._stop:
+            # Hand control back to run() so it can close this account's socket
+            # and open the new one.
+            if self._pending_broker is not None:
+                return
+
             if not cfg.running:
                 await asyncio.sleep(cfg.poll_interval)
                 continue

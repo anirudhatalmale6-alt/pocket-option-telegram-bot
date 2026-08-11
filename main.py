@@ -150,6 +150,20 @@ async def run(paper: bool) -> None:
         web.risk = trader.risk
         web.reset_cb = trader.risk.reset_day
         web.trader = trader
+
+        def reconnect() -> None:
+            """
+            Swap in a broker built from details just entered on the panel.
+
+            Raises on a bad token so the panel can report it honestly instead of
+            saying "connecting" to something that will never connect.
+            """
+            from core.po_broker import PocketOptionBroker
+            trader.swap_broker(PocketOptionBroker(config.po_ssid, demo=config.po_demo,
+                                                  uid=config.po_uid))
+            web.paper = False
+
+        web.reload_cb = reconnect
         web.paper = practice
         web.practice_note = practice_note
         web.start()

@@ -53,6 +53,7 @@ class WebInterface:
         self.risk = None            # set by main() once the Trader exists
         self.trader = None          # ditto — read for the "still watching" line
         self.reset_cb = None
+        self.reload_cb = None       # set by main(): reconnect with new details
         self.balance: Optional[float] = None
         self.connected = False
         self.paper = False          # True when running without a real account
@@ -126,6 +127,12 @@ class WebInterface:
             "mode": "PRACTICE" if self.paper else ("DEMO" if c.po_demo else "LIVE"),
             "is_live": self._is_live(),
             "has_token": bool(c.po_ssid) or self.paper,
+            # Whether a token is set, never the token. This payload is served
+            # over plain HTTP and echoed into the browser; the session string is
+            # a password and has no business travelling back out again.
+            "session_set": bool(c.po_ssid),
+            "uid": c.po_uid,
+            "demo": c.po_demo,
             "practice_note": self.practice_note,
             # Proof of life. A selective strategy sitting out looks exactly like
             # a crashed bot, so show what it checked, when, and why it passed.
@@ -200,6 +207,77 @@ class WebInterface:
             self._assets_at = now
         return {"ok": True, "cached": False, "assets": rows}
 
+    # -------------------------------------------------------------- connect
+    def _connect(self, body: dict) -> dict:
+        """
+        Save the Pocket Option session from the page and switch to that account.
+
+        Everything about this is shaped by one fact: the person using it is on a
+        Chromebook, has no text editor, and has already lost a day to terminals
+        and hidden files. So the panel writes .env itself, validates the paste
+        before saving rather than after failing to connect, and reconnects
+        without a restart.
+        """
+        c = self.config
+        session = str(body.get("session", "")).strip()
+        raw_uid = str(body.get("uid", "")).strip()
+        demo = bool(body.get("demo", True))
+
+        if not session:
+            return {"ok": False, "message": "Paste the ci_session cookie first."}
+
+        try:
+            uid = int(raw_uid or c.po_uid or 0)
+        except ValueError:
+            return {"ok": False, "message": "The account id should be digits only."}
+
+        # Validate BEFORE writing anything. ssid.normalise knows the difference
+        # between the trading token and the chart token that gets copied by
+        # mistake, and explains which is which — far better than saving a broken
+        # value and surfacing it later as a silent failure to connect.
+        from .ssid import SsidError, normalise
+        try:
+            normalise(session, uid=uid, demo=demo)
+        except SsidError as exc:
+            return {"ok": False, "message": str(exc)}
+
+        try:
+            from .envfile import update
+            # PO_SSID is blanked deliberately. config.from_env reads
+            #   po_ssid = PO_SSID or PO_SESSION
+            # so a leftover PO_SSID from an earlier attempt would silently win
+            # over what was just typed here, and the panel would look like it
+            # had saved something it had not.
+            update({"PO_SESSION": session, "PO_UID": str(uid),
+                    "PO_DEMO": "true" if demo else "false",
+                    "PO_SSID": ""})
+        except OSError as exc:
+            # Say it did not save. Claiming success here would be the worst
+            # possible outcome: he restarts and it is still not connected.
+            return {"ok": False,
+                    "message": f"Could not write the .env file: {exc}"}
+
+        c.po_ssid = session
+        c.po_uid = uid
+        c.po_demo = demo
+        self.paper = False
+        self.practice_note = ""
+        # Never log the token itself — this feed is on screen and in the logs.
+        self.log(f"Account details saved (uid {uid}, "
+                 f"{'DEMO' if demo else 'LIVE'}). Reconnecting…")
+
+        if self.reload_cb is None:
+            return {"ok": True, "message": "Saved to .env. Restart the bot to connect: "
+                                           "press Ctrl+C, then run  bash run.sh"}
+        try:
+            self.reload_cb()
+        except Exception as exc:
+            return {"ok": True,
+                    "message": f"Saved to .env, but could not reconnect automatically "
+                               f"({exc}). Restart with: bash run.sh"}
+        return {"ok": True, "message": "Saved. Connecting to your Pocket Option "
+                                       "account now — watch the badge at the top."}
+
     # ------------------------------------------------------------ commands
     def command(self, body: dict) -> dict:
         """Apply one action from the page. Returns {ok, message}."""
@@ -242,6 +320,9 @@ class WebInterface:
             c.running = False
             self.log("⏸ STOP pressed from the control panel.")
             return {"ok": True, "message": "Trading stopped."}
+
+        if action == "connect":
+            return self._connect(body)
 
         if action == "reset":
             if self.reset_cb:
@@ -531,6 +612,33 @@ PAGE = r"""<!doctype html>
     <div class="note" id="watch" style="display:none"></div>
   </div>
 
+  <!-- Account connection. Lives on the page because the alternative is asking
+       a non-technical user to paste a 400-character secret into a hidden
+       dotfile from a terminal, which is not a real option. -->
+  <div class="card">
+    <h2>Your Pocket Option account</h2>
+    <div class="note" id="conn-state" style="margin-bottom:14px"></div>
+    <div class="grid">
+      <div style="grid-column:1/-1">
+        <label for="f-session">Session cookie (ci_session)</label>
+        <input id="f-session" type="password" autocomplete="off" spellcheck="false"
+               placeholder="starts with a%3A4%3A%7B and is very long">
+        <div class="sub">Chrome on this machine &rarr; open Pocket Option &rarr; Ctrl+Shift+I &rarr;
+          Application &rarr; Cookies &rarr; pocketoption.com &rarr; copy the value of
+          <b>ci_session</b>. It is a password: it is stored on this computer only
+          and never shown again.</div>
+      </div>
+      <div><label for="f-uid">Account id (uid)</label><input id="f-uid" type="text" inputmode="numeric"></div>
+      <div>
+        <label>Which balance</label>
+        <div class="row"><input type="checkbox" id="f-demo" checked><label for="f-demo">Demo — practice money (recommended)</label></div>
+      </div>
+    </div>
+    <div class="btns" style="margin-top:14px">
+      <button class="ghost" onclick="saveAccount()">Save &amp; connect</button>
+    </div>
+  </div>
+
   <div class="card">
     <h2>Today</h2>
     <div class="stats">
@@ -678,6 +786,19 @@ async function loadPayouts(){
   }catch(e){ note.textContent = 'Could not reach the bot.'; }
 }
 
+function saveAccount(){
+  const s = document.getElementById('f-session').value.trim();
+  if (!s){ toast('Paste the ci_session cookie first.', true); return; }
+  const demo = document.getElementById('f-demo').checked;
+  if (!demo && !confirm('Save this as your REAL money account?\n\n' +
+      'No strategy in this bot has yet beaten its break-even line on real data. ' +
+      'Tick "Demo" instead unless you have proven one on 100+ trades.')) return;
+  cmd({action:'connect', session:s, uid:document.getElementById('f-uid').value, demo:demo});
+  // Clear the box the moment it is sent. Leaving a session token sitting in a
+  // form field is how it ends up in a screenshot.
+  document.getElementById('f-session').value = '';
+}
+
 function pickAsset(symbol, payout){
   // Set the pair AND its payout together, so the break-even figure on the
   // Today card is the one that actually applies to what is being traded.
@@ -751,6 +872,20 @@ function render(s){
   } else {
     watch.style.display = 'none';
   }
+
+  // Connection card. Says what IS set without ever restating the secret.
+  const cs = document.getElementById('conn-state');
+  if (s.session_set){
+    cs.textContent = 'Connected details are saved (account ' + s.uid + ', ' +
+      (s.demo ? 'demo balance' : 'REAL money') + '). ' +
+      (s.connected ? 'Pocket Option is responding.'
+                   : 'Not responding yet — if this does not clear, the cookie has expired; paste a fresh one.');
+  } else {
+    cs.textContent = 'No account connected yet — the bot is on practice data. ' +
+      'Paste your cookie below to trade on your own Pocket Option balance.';
+  }
+  setField('f-uid', s.uid || '');
+  setField('f-demo', s.demo);
 
   const pnl = document.getElementById('s-pnl');
   pnl.textContent = money(s.pnl);

@@ -31,6 +31,9 @@ adjustable live without a restart.
 - **Drop-in strategies**: put a `.py` file in `strategies/` and it appears in the
   panel's dropdown by itself — no code to edit, no restart. One function,
   `evaluate(candles)`. See [strategies/README.md](strategies/README.md).
+- **Connect from the panel**: paste your Pocket Option session cookie into the
+  page and press Save. It validates the paste, writes `.env` for you (mode 600)
+  and reconnects with no restart — no hidden files, no text editor, no terminal.
 - **A real-money guard**: on a funded account the panel shows a standing warning
   and START asks once, with the break-even maths on screen at the moment of the
   decision. Demo and practice are one press, as before.
