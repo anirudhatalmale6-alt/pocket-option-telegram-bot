@@ -23,6 +23,7 @@ from typing import Optional
 
 from core.broker import PaperBroker
 from core.config import BotConfig
+from core.strategy import StrategySettings
 from core.trader import Trader
 from core.web_ui import WebInterface
 
@@ -31,6 +32,35 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("bot")
+
+
+def _relax_for_practice(config: BotConfig) -> None:
+    """
+    Make practice mode actually demonstrate itself.
+
+    The PaperBroker feeds synthetic random-walk prices, and the selective
+    strategies simply never fire on it — measured over 1500 ticks: confluence 0,
+    custom 0, pullback 0, while rsi got 67 and alligator 70. Someone pressing
+    START on the shipped default (confluence) therefore watches an empty screen
+    forever and reasonably concludes the bot is broken.
+
+    That pickiness is a virtue on a real account and is left completely alone
+    there. Here we loosen the thresholds so the full pipeline — signal, entry,
+    settlement, martingale, PnL — is visible within a minute. The panel says so
+    on screen, so nobody mistakes these numbers for a backtest result.
+    """
+    config.strategy = StrategySettings(
+        ema_fast=5, ema_slow=20, require_both=False,
+        rsi_oversold=45, rsi_overbought=55,
+        stoch_oversold=35, stoch_overbought=65,
+    )
+    # Confluence needs several strategies to agree, which random data will not
+    # do; fall back to the one that reads this kind of series honestly.
+    if config.strategy_mode in ("confluence", "custom", "pullback"):
+        log.info("Practice mode: %s never triggers on simulated prices — "
+                 "using 'rsi' so you can watch it trade.", config.strategy_mode)
+        config.strategy_mode = "rsi"
+    config.confluence.min_agree = 2
 
 
 async def run(paper: bool) -> None:
@@ -42,6 +72,7 @@ async def run(paper: bool) -> None:
             log.warning("PO_SSID not set — falling back to PaperBroker (offline simulator).")
         broker = PaperBroker()
         config.po_demo = True
+        _relax_for_practice(config)
     else:
         # Imported lazily so the optional dependency is only needed for real trading.
         from core.po_broker import PocketOptionBroker

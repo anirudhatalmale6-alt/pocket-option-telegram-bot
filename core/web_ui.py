@@ -126,6 +126,11 @@ class WebInterface:
                 return {"ok": False, "message": "No Pocket Option token set — cannot trade."}
             c.running = True
             self.log("▶ START pressed from the control panel.")
+            # Say what it is doing and roughly how long a quiet spell is normal.
+            # Without this, a selective strategy looks identical to a dead bot.
+            self.log(f"Watching {c.asset} on {c.candle_timeframe}s candles with the "
+                     f"'{c.strategy_mode}' strategy. Trades appear below when a "
+                     f"setup matches — a quiet spell is normal, not a fault.")
             return {"ok": True, "message": "Trading started."}
 
         if action == "stop":
