@@ -86,6 +86,13 @@ class Trader:
         self.checks = 0                # candles evaluated since start
         self.last_check_ts = 0.0       # when the newest candle was judged
         self.last_reason = ""          # why the last candle was not traded
+        self._balance_at = 0.0         # when the balance was last refreshed
+        self.empty_candles = 0         # consecutive empty reads from the broker
+        # How long to let Pocket Option deliver the opening balance. Only ever
+        # waited out when the figure is non-positive, so a healthy account pays
+        # nothing for it. Instance attributes so tests need not sleep for real.
+        self.balance_attempts = 6
+        self.balance_delay = 1.0
 
     def _status(self, connected: bool, balance: Optional[float] = None) -> None:
         """Tell the UI whether we are connected (never fatal if it fails)."""
@@ -106,6 +113,32 @@ class Trader:
             pass
 
     # ------------------------------------------------------------------ run
+    async def _settled_balance(self, broker: Broker, attempts: int = 0,
+                               delay: float = 0.0) -> float:
+        """
+        Read the balance, giving Pocket Option a moment to actually send it.
+
+        The balance arrives asynchronously over the websocket after the auth
+        handshake. Asking for it the instant we connect can return whatever the
+        client holds before that message lands — the client's real demo account
+        showed 673,000 on Pocket Option's own site while this reported -1.00.
+        A negative balance is impossible on a binary-options account, so treat a
+        non-positive figure as "not arrived yet" and give it a few seconds.
+
+        Returns the last value read either way: if the account really is empty,
+        that is the truth and the caller warns about it. Never invents a number.
+        """
+        attempts = attempts or self.balance_attempts
+        delay = delay or self.balance_delay
+        bal = 0.0
+        for attempt in range(attempts):
+            bal = float(await broker.balance())
+            if bal > 0:
+                return bal
+            if attempt < attempts - 1:
+                await asyncio.sleep(delay)
+        return bal
+
     def swap_broker(self, broker: Broker) -> None:
         """
         Trade against a different account from the next cycle, no restart.
@@ -128,7 +161,7 @@ class Trader:
             broker = self.broker
             try:
                 await broker.connect()
-                bal = await broker.balance()
+                bal = await self._settled_balance(broker)
                 mode = "DEMO" if self.config.po_demo else "LIVE"
                 self._status(True, bal)
                 await self.notify(f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
@@ -209,6 +242,19 @@ class Trader:
                 cfg.running = False
                 continue
 
+            # Keep the balance tile honest even when nothing is trading. It used
+            # to be read once at connect and then only after a settled trade, so
+            # a bad first read stayed on screen indefinitely — which is exactly
+            # what happened: -1.00 displayed for 23 minutes against a real
+            # balance of 673,000.
+            now = time.time()
+            if now - self._balance_at > 30:
+                self._balance_at = now
+                try:
+                    self._status(True, await self.broker.balance())
+                except Exception:
+                    pass      # a failed refresh must never stop trading
+
             if self._active:
                 await asyncio.sleep(cfg.poll_interval)
                 continue
@@ -217,8 +263,22 @@ class Trader:
                 await self.broker.get_candles(cfg.asset, cfg.candle_timeframe, 200)
             )
             if not candles:
+                # No price data is a completely different problem from "no setup
+                # matched", and on a blank screen the two look identical. Say
+                # which one it is, naming the asset — a typo'd or closed pair is
+                # the usual cause, and neither announces itself.
+                self.empty_candles += 1
+                self.last_check_ts = time.time()
+                self.last_reason = (
+                    f"no price data coming back for '{cfg.asset}' at "
+                    f"{cfg.candle_timeframe}s — check the asset name is right "
+                    f"and that the pair is open (use Show live payouts)"
+                )
+                if self.empty_candles in (10, 100, 1000):
+                    await self.notify(f"⚠️ {self.last_reason}")
                 await asyncio.sleep(cfg.poll_interval)
                 continue
+            self.empty_candles = 0
 
             # Act once per candle, on the close. Polling faster than the candle
             # only makes us notice the close sooner; it must not re-judge a bar

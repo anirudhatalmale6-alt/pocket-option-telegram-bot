@@ -872,7 +872,12 @@ function render(s){
       '. Sitting out is a decision, not a fault.';
   } else if (s.running){
     watch.style.display = 'block';
-    watch.textContent = 'Watching — waiting for the first candle to close.';
+    // checks is still 0 here, which happens either because the first candle has
+    // not closed yet OR because no price data is arriving at all. The second is
+    // a fault and must not hide behind the first's reassuring wording.
+    watch.textContent = s.last_reason
+      ? 'Not trading — ' + s.last_reason
+      : 'Watching — waiting for the first candle to close.';
   } else {
     watch.style.display = 'none';
   }

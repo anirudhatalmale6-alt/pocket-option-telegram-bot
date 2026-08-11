@@ -164,7 +164,8 @@ def test_an_empty_account_gets_its_own_warning():
         said.append(msg)
 
     trader = Trader(cfg, EmptyBroker("empty", events), notify=notify)
-    asyncio.run(_run_briefly(trader, 0.1))
+    trader.balance_attempts, trader.balance_delay = 2, 0.01   # do not sleep for real
+    asyncio.run(_run_briefly(trader, 0.2))
 
     assert any("no money in it" in m for m in said)
 
@@ -183,3 +184,94 @@ def test_a_funded_account_gets_no_such_warning():
     asyncio.run(_run_briefly(trader, 0.1))
 
     assert not any("no money in it" in m for m in said)
+
+
+# ------------------------------------------------ balance is read until it lands
+class SlowBalanceBroker(FakeBroker):
+    """Mimics Pocket Option: the balance arrives a moment after the handshake."""
+
+    def __init__(self, name, events, real=673000.0, blank_reads=3):
+        super().__init__(name, events)
+        self.real = real
+        self.blank_reads = blank_reads
+        self.reads = 0
+
+    async def balance(self):
+        self.reads += 1
+        if self.reads <= self.blank_reads:
+            return -1.0          # the sentinel the client actually saw
+        return self.real
+
+
+def test_a_late_arriving_balance_is_waited_for_not_cached_as_minus_one():
+    """
+    The client's demo held 673,000 on Pocket Option's own site while the panel
+    showed -1.00 for 23 minutes. The balance arrives asynchronously after auth;
+    reading it once, immediately, caught the value before it landed.
+    """
+    events = []
+    broker = SlowBalanceBroker("po", events)
+    cfg = BotConfig()
+    trader = Trader(cfg, broker)
+    got = asyncio.run(trader._settled_balance(broker, attempts=6, delay=0.01))
+    assert got == 673000.0
+
+
+def test_a_genuinely_empty_account_is_reported_not_retried_forever():
+    """An account really at zero must still return, and be reported honestly."""
+    events = []
+    broker = SlowBalanceBroker("po", events, real=0.0, blank_reads=99)
+    cfg = BotConfig()
+    trader = Trader(cfg, broker)
+    got = asyncio.run(trader._settled_balance(broker, attempts=3, delay=0.01))
+    assert got <= 0
+    assert broker.reads == 3          # bounded, does not spin
+
+
+def test_the_balance_refreshes_while_idle_so_a_bad_read_self_corrects():
+    # It used to be read only at connect and after a settled trade, so with no
+    # trades a wrong value stayed on screen indefinitely.
+    events = []
+    broker = SlowBalanceBroker("po", events, blank_reads=0)
+    cfg = BotConfig()
+    cfg.poll_interval = 0.01
+    cfg.running = False
+    seen = []
+    trader = Trader(cfg, broker, status_cb=lambda c, b: seen.append(b))
+    trader._balance_at = 0.0
+    asyncio.run(_run_briefly(trader, 0.2))
+    assert any(b == 673000.0 for b in seen if b is not None)
+
+
+# ------------------------------------------- silence with no data is not silence
+class NoDataBroker(FakeBroker):
+    async def get_candles(self, asset, timeframe, count):
+        return []
+
+
+def test_no_price_data_is_named_rather_than_looking_like_no_signal():
+    """
+    "hasn't done anything in 23 min" has two very different causes: a picky
+    strategy, or no candles arriving at all. They must not read the same.
+    """
+    events = []
+    cfg = BotConfig()
+    cfg.poll_interval = 0.01
+    cfg.running = True
+    cfg.asset = "NONSENSE_otc"
+    trader = Trader(cfg, NoDataBroker("nodata", events))
+    asyncio.run(_run_briefly(trader, 0.2))
+    assert trader.empty_candles > 0
+    assert "no price data" in trader.last_reason
+    assert "NONSENSE_otc" in trader.last_reason
+
+
+def test_the_empty_counter_resets_once_data_returns():
+    events = []
+    cfg = BotConfig()
+    cfg.poll_interval = 0.01
+    cfg.running = True
+    trader = Trader(cfg, FakeBroker("ok", events))
+    trader.empty_candles = 5
+    asyncio.run(_run_briefly(trader, 0.15))
+    assert trader.empty_candles == 0
