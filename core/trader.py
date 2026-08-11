@@ -113,11 +113,28 @@ class Trader:
                 self._status(False)
                 await self.broker.close()
 
+    def _closed_candles(self, candles):
+        """
+        Drop the candle that is still being built.
+
+        Pocket Option's newest candle is live: it keeps changing until its clock
+        runs out. Reading indicators off it means judging an unfinished bar —
+        a "cross" can appear halfway through and be gone by the close, which is
+        both a different signal from the one the backtests measured and a way to
+        enter mid-candle on something that never actually happened.
+        """
+        if getattr(self.broker, "LAST_CANDLE_IS_PARTIAL", False) and len(candles) > 1:
+            return candles[:-1]
+        return candles
+
     async def _loop(self) -> None:
         cfg = self.config
         self.risk.risk = cfg.risk
         self.risk.martingale = cfg.martingale
         active_mode = cfg.strategy_mode
+        # Timestamp of the last candle we already made a decision on, so one
+        # candle produces at most one entry no matter how often we poll.
+        judged: Optional[float] = None
 
         while not self._stop:
             if not cfg.running:
@@ -141,7 +158,22 @@ class Trader:
                 await asyncio.sleep(cfg.poll_interval)
                 continue
 
-            candles = await self.broker.get_candles(cfg.asset, cfg.candle_timeframe, 200)
+            candles = self._closed_candles(
+                await self.broker.get_candles(cfg.asset, cfg.candle_timeframe, 200)
+            )
+            if not candles:
+                await asyncio.sleep(cfg.poll_interval)
+                continue
+
+            # Act once per candle, on the close. Polling faster than the candle
+            # only makes us notice the close sooner; it must not re-judge a bar
+            # we have already ruled on.
+            stamp = candles[-1].time
+            if stamp == judged:
+                await asyncio.sleep(cfg.poll_interval)
+                continue
+            judged = stamp
+
             signal = self.strategy.evaluate(candles)
 
             if signal.direction is Direction.NONE:

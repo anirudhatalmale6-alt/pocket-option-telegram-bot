@@ -46,6 +46,10 @@ except Exception:  # pragma: no cover - depends on optional install
 
 
 class PocketOptionBroker(Broker):
+    # Pocket Option's newest candle is still forming; the trader discards it and
+    # only acts on candles that have closed. See Broker.LAST_CANDLE_IS_PARTIAL.
+    LAST_CANDLE_IS_PARTIAL = True
+
     def __init__(self, ssid: str, demo: bool = True, uid: int = 0):
         if not ssid:
             raise ValueError("PO_SSID is empty — paste your browser session token (see docs/SETUP.md)")

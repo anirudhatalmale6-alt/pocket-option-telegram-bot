@@ -34,45 +34,77 @@ logging.basicConfig(
 log = logging.getLogger("bot")
 
 
-def _relax_for_practice(config: BotConfig) -> None:
+def _prepare_practice(config: BotConfig) -> None:
     """
-    Make practice mode actually demonstrate itself.
+    Set practice mode up so what it shows is both visible AND meaningful.
 
-    The PaperBroker feeds synthetic random-walk prices, and the selective
-    strategies simply never fire on it — measured over 1500 ticks: confluence 0,
-    custom 0, pullback 0, while rsi got 67 and alligator 70. Someone pressing
-    START on the shipped default (confluence) therefore watches an empty screen
-    forever and reasonably concludes the bot is broken.
+    Two separate problems, and it matters that they are separate:
 
-    That pickiness is a virtue on a real account and is left completely alone
-    there. Here we loosen the thresholds so the full pipeline — signal, entry,
-    settlement, martingale, PnL — is visible within a minute. The panel says so
-    on screen, so nobody mistakes these numbers for a backtest result.
+    1. Visibility. The 'pullback' default fires almost never with its shipped
+       thresholds — measured across the four real data files: 0, 0, 1, 1 signals
+       in thousands of candles. Pressing START on it looks identical to a dead
+       bot. The "Active" preset (the one real_backtest.py measures) fires often
+       enough to watch, so practice uses it and says so.
+
+    2. Meaning. Practice used to run on the random-walk PaperBroker. A random
+       walk has nothing to detect, so any strategy lands near 50% there — and at
+       an 80% payout, 50% loses steadily. A win rate off that simulator is not a
+       weak result, it is not a result at all. Practice now replays real EUR/USD
+       candles instead (core/replay_broker.py), so the prices are genuine and
+       the settlement is against what actually happened next.
+
+    What practice still cannot tell you: how the strategy does on Pocket
+    Option's OTC pairs, which are synthetic and behave differently. That answer
+    only comes from your own demo account.
     """
-    config.strategy = StrategySettings(
-        ema_fast=5, ema_slow=20, require_both=False,
-        rsi_oversold=45, rsi_overbought=55,
-        stoch_oversold=35, stoch_overbought=65,
-    )
-    # Confluence needs several strategies to agree, which random data will not
-    # do; fall back to the one that reads this kind of series honestly.
-    if config.strategy_mode in ("confluence", "custom", "pullback"):
-        log.info("Practice mode: %s never triggers on simulated prices — "
-                 "using 'rsi' so you can watch it trade.", config.strategy_mode)
-        config.strategy_mode = "rsi"
-    config.confluence.min_agree = 2
+    if config.strategy_mode == "pullback" and config.strategy == StrategySettings():
+        log.info("Practice mode: the default 'pullback' thresholds trigger almost "
+                 "never on real data — using the wider 'Active' preset so you can "
+                 "actually watch it work.")
+        config.strategy = StrategySettings(
+            ema_fast=5, ema_slow=20, require_both=False,
+            rsi_oversold=40, rsi_overbought=60,
+            stoch_oversold=30, stoch_overbought=70,
+        )
 
 
 async def run(paper: bool) -> None:
     config = BotConfig.from_env()
+    practice = paper or not config.po_ssid
+    practice_note = ""
 
     # ---------------------------------------------------------- broker
     if paper or not config.po_ssid:
         if not paper:
-            log.warning("PO_SSID not set — falling back to PaperBroker (offline simulator).")
-        broker = PaperBroker()
+            log.warning("PO_SSID not set — falling back to practice mode (no account).")
+        # Prefer replaying real market data; fall back to the synthetic walk only
+        # if the data files are missing, and be loud about the difference.
+        try:
+            from core.replay_broker import ReplayBroker
+            broker = ReplayBroker(timeframe=config.candle_timeframe,
+                                  payout=config.payout_percent / 100.0)
+            practice_note = (f"Practice mode — replaying real EUR/USD history at "
+                             f"{broker.effective_timeframe}s candles. No account, no money. "
+                             f"Real prices, but NOT Pocket Option's OTC pairs.")
+            log.info("Practice mode: replaying REAL EUR/USD history at %ss candles "
+                     "(%s%% payout, break-even %.1f%%).",
+                     broker.effective_timeframe, config.payout_percent,
+                     100.0 * 100.0 / (100.0 + config.payout_percent))
+            if broker.timeframe_was_rounded:
+                log.warning("Your candle size is %ss, but free EUR/USD history has no "
+                            "detail below 5 minutes (every 1m bar is flat), so practice "
+                            "replays %ss candles. Your %ss setting still applies on a "
+                            "real account.", config.candle_timeframe,
+                            broker.effective_timeframe, config.candle_timeframe)
+        except Exception as exc:
+            log.warning("Real-data replay unavailable (%s) — using the synthetic "
+                        "simulator. Its win rate is meaningless: a random walk has "
+                        "no pattern to find.", exc)
+            broker = PaperBroker(payout=config.payout_percent / 100.0)
+            practice_note = ("Practice mode — SYNTHETIC prices. Proves the bot works; "
+                             "its win rate means nothing.")
         config.po_demo = True
-        _relax_for_practice(config)
+        _prepare_practice(config)
     else:
         # Imported lazily so the optional dependency is only needed for real trading.
         from core.po_broker import PocketOptionBroker
@@ -117,7 +149,8 @@ async def run(paper: bool) -> None:
         # The panel needs the live risk manager to show PnL and the trade list.
         web.risk = trader.risk
         web.reset_cb = trader.risk.reset_day
-        web.paper = isinstance(broker, PaperBroker)
+        web.paper = practice
+        web.practice_note = practice_note
         web.start()
         shown = "localhost" if config.web_host in ("0.0.0.0", "") else config.web_host
         log.info("Control panel: http://%s:%s", shown, config.web_port)

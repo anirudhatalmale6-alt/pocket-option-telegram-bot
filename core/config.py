@@ -109,6 +109,13 @@ class BotConfig:
     candle_timeframe: int = 60         # seconds per candle used for signals
     poll_interval: float = 1.0         # main loop tick in seconds
 
+    # Payout % your asset pays on a win. It decides the ONLY number that matters:
+    # the win rate you must beat to break even, 100 / (100 + payout). At 80% you
+    # need 55.6%; at 92% only 52.1%. The panel shows your win rate against this
+    # line, because a win rate on its own tells you nothing. Run scan_assets.py
+    # to see the live payout of every pair.
+    payout_percent: float = 80.0
+
     # Which entry model to trade with:
     #   "pullback" -> trend + RSI/Stochastic pull-back (core/strategy.py)
     #   "linreg" / "ema" / "donchian" -> pure trend modes (core/trend_strategy.py)
@@ -151,6 +158,7 @@ class BotConfig:
 
         cfg.candle_timeframe = _i("CANDLE_TIMEFRAME", cfg.candle_timeframe)
         cfg.poll_interval = _f("POLL_INTERVAL", cfg.poll_interval)
+        cfg.payout_percent = _f("PAYOUT_PERCENT", cfg.payout_percent)
         cfg.strategy_mode = _s("STRATEGY_MODE", cfg.strategy_mode)
         cfg.trend.mode = _s("TREND_MODE", cfg.trend.mode)
 

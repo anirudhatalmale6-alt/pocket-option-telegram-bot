@@ -33,6 +33,14 @@ class TradeResult:
 class Broker(abc.ABC):
     """Minimal surface the trader needs."""
 
+    # Does get_candles() return a final candle that is still forming?
+    # Pocket Option's live feed does: the newest candle updates tick by tick
+    # until its clock runs out. Indicators computed on a half-built candle
+    # flicker, and a signal read off one can vanish before the candle closes —
+    # so the trader discards it and only judges candles that have finished.
+    # Offline brokers replay already-closed candles, so they leave this False.
+    LAST_CANDLE_IS_PARTIAL = False
+
     @abc.abstractmethod
     async def connect(self) -> None: ...
 

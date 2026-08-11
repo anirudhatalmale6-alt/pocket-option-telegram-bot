@@ -54,7 +54,8 @@ class WebInterface:
         self.reset_cb = None
         self.balance: Optional[float] = None
         self.connected = False
-        self.paper = False          # True when running the offline simulator
+        self.paper = False          # True when running without a real account
+        self.practice_note = ""     # what KIND of practice data, set by main.py
         self._log: List[dict] = []  # newest-last ring buffer of event lines
         self._lock = threading.Lock()
         self._server: Optional[ThreadingHTTPServer] = None
@@ -95,6 +96,7 @@ class WebInterface:
             "connected": self.connected,
             "mode": "PRACTICE" if self.paper else ("DEMO" if c.po_demo else "LIVE"),
             "has_token": bool(c.po_ssid) or self.paper,
+            "practice_note": self.practice_note,
             "asset": c.asset,
             "expiry": c.expiry_seconds,
             "timeframe": c.candle_timeframe,
@@ -111,6 +113,10 @@ class WebInterface:
             "wins": r.wins if r else 0,
             "losses": r.losses if r else 0,
             "winrate": r.win_rate() if r else 0.0,
+            # The number the win rate has to beat. Without it on screen, 48%
+            # reads as "nearly there" when at an 80% payout it is a steady loss.
+            "breakeven": 100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent else 100.0,
+            "payout": c.payout_percent,
             "trades": trades,
             "log": log,
         }
@@ -163,15 +169,27 @@ class WebInterface:
 
             if "expiry" in body:
                 v = int(body["expiry"])
-                if v < 5:
-                    return {"ok": False, "message": "Expiry must be at least 5 seconds."}
+                # Not my rule — Pocket Option's. I scanned all 183 of their
+                # assets and every one has a 60s minimum expiry, so anything
+                # shorter would simply be rejected by their server at entry.
+                if v < 60:
+                    return {"ok": False, "message":
+                            "Pocket Option's shortest expiry is 60 seconds — every one "
+                            "of their 183 assets, checked live. A shorter expiry would "
+                            "be refused when the trade is placed. Candle size can be "
+                            "shorter than the expiry; that is the setting you want."}
                 c.expiry_seconds = v
                 changed.append(f"expiry {v}s")
 
             if "timeframe" in body:
                 v = int(body["timeframe"])
+                # Candle size is yours to choose — 30s candles with a 60s expiry
+                # is a perfectly normal pairing. The floor is just a sanity guard
+                # against a typo like 0 or 1, which would poll a live feed flat out.
                 if v < 5:
-                    return {"ok": False, "message": "Candle size must be at least 5 seconds."}
+                    return {"ok": False, "message":
+                            "Candle size must be at least 5 seconds — below that the bot "
+                            "would hammer the feed and get the connection dropped."}
                 c.candle_timeframe = v
                 changed.append(f"candle {v}s")
 
@@ -337,6 +355,7 @@ PAGE = r"""<!doctype html>
   .stat{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
   .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
   .stat .v{font-size:22px;font-weight:680;margin-top:3px;font-variant-numeric:tabular-nums}
+  .sub{font-size:11px;color:var(--muted);margin-top:2px;line-height:1.35}
   .pos{color:var(--green)} .neg{color:var(--red)}
   .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:14px}
   label{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}
@@ -393,7 +412,7 @@ PAGE = r"""<!doctype html>
     <h2>Today</h2>
     <div class="stats">
       <div class="stat"><div class="k">Profit / Loss</div><div class="v" id="s-pnl">—</div></div>
-      <div class="stat"><div class="k">Win rate</div><div class="v" id="s-wr">—</div></div>
+      <div class="stat"><div class="k">Win rate</div><div class="v" id="s-wr">—</div><div class="sub" id="s-be"></div></div>
       <div class="stat"><div class="k">Wins / Losses</div><div class="v" id="s-wl">—</div></div>
       <div class="stat"><div class="k">Balance</div><div class="v" id="s-bal">—</div></div>
     </div>
@@ -405,8 +424,8 @@ PAGE = r"""<!doctype html>
       <div><label for="f-strategy">Strategy</label><select id="f-strategy"></select></div>
       <div><label for="f-asset">Asset</label><input id="f-asset" placeholder="EURUSD_otc"></div>
       <div><label for="f-stake">Stake per trade ($)</label><input id="f-stake" type="number" step="0.01" min="0.01"></div>
-      <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="5"></div>
-      <div><label for="f-timeframe">Candle size (seconds)</label><input id="f-timeframe" type="number" min="5"></div>
+      <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div></div>
+      <div><label for="f-timeframe">Candle size (seconds)</label><input id="f-timeframe" type="number" min="5" step="1"><div class="sub">Can be shorter than the expiry, e.g. 30</div></div>
       <div><label for="f-loss">Stop after losing ($)</label><input id="f-loss" type="number" step="0.01" min="0"></div>
       <div><label for="f-target">Stop after winning ($, 0 = off)</label><input id="f-target" type="number" step="0.01" min="0"></div>
       <div>
@@ -524,13 +543,28 @@ function render(s){
     'LIVE':     'LIVE mode — real money is at risk.'
   };
   document.getElementById('hint').textContent = s.has_token
-    ? hints[s.mode]
+    ? ((s.mode === 'PRACTICE' && s.practice_note) ? s.practice_note : hints[s.mode])
     : 'No Pocket Option token loaded yet, so trading is disabled.';
 
   const pnl = document.getElementById('s-pnl');
   pnl.textContent = money(s.pnl);
   pnl.className = 'v ' + (s.pnl > 0 ? 'pos' : s.pnl < 0 ? 'neg' : '');
-  document.getElementById('s-wr').textContent = (s.wins + s.losses) ? s.winrate.toFixed(0) + '%' : '—';
+  // Always show the win rate next to the rate that breaks even, and say when
+  // the sample is still too small to mean anything. A bare percentage after a
+  // handful of trades is the easiest number in trading to fool yourself with.
+  const decided = s.wins + s.losses;
+  const wr = document.getElementById('s-wr');
+  wr.textContent = decided ? s.winrate.toFixed(0) + '%' : '—';
+  wr.className = 'v ' + (!decided ? '' : (s.winrate >= s.breakeven ? 'pos' : 'neg'));
+  const be = document.getElementById('s-be');
+  if (!decided) {
+    be.textContent = 'need ' + s.breakeven.toFixed(1) + '% to break even at ' + s.payout + '% payout';
+  } else if (decided < 100) {
+    be.textContent = 'need ' + s.breakeven.toFixed(1) + '% — only ' + decided +
+                     ' trades, too few to judge (100+ before it means anything)';
+  } else {
+    be.textContent = 'need ' + s.breakeven.toFixed(1) + '% to break even — ' + decided + ' trades';
+  }
   document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
   document.getElementById('s-bal').textContent = s.balance === null ? '—' : '$' + s.balance.toFixed(2);
 
