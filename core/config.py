@@ -25,6 +25,29 @@ from .confluence_strategy import ConfluenceSettings
 load_dotenv()  # read a local .env if present
 
 
+def _s(name: str, default: str = "") -> str:
+    """
+    Read a string setting, tolerating a trailing comment on an EMPTY value.
+
+    python-dotenv strips an inline `# comment` when the value is non-empty, but
+    for a line like
+
+        WEB_PASSWORD=          # set this on a public VPS
+
+    the value comes back as the comment text itself. That silently turned an
+    unset password into a real one nobody knew, and locked the control panel.
+    A value that begins with '#' is never something a user meant to set, so
+    treat it as unset.
+    """
+    val = os.getenv(name)
+    if val is None:
+        return default
+    val = val.strip()
+    if val.startswith("#"):
+        return default
+    return val
+
+
 def _f(name: str, default: float) -> float:
     try:
         return float(os.getenv(name, default))
@@ -112,24 +135,24 @@ class BotConfig:
         cfg = cls()
         # PO_SSID is the whole 42["auth",{...}] line. PO_SESSION is the easier
         # route: just the ci_session cookie value, paired with PO_UID.
-        cfg.po_ssid = os.getenv("PO_SSID", "") or os.getenv("PO_SESSION", "")
+        cfg.po_ssid = _s("PO_SSID") or _s("PO_SESSION")
         cfg.po_uid = _i("PO_UID", 0)
         cfg.po_demo = _b("PO_DEMO", True)
-        cfg.asset = os.getenv("PO_ASSET", cfg.asset)
+        cfg.asset = _s("PO_ASSET", cfg.asset)
         cfg.expiry_seconds = _i("PO_EXPIRY_SECONDS", cfg.expiry_seconds)
 
-        cfg.telegram_token = os.getenv("TELEGRAM_TOKEN", "")
-        cfg.telegram_chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        cfg.telegram_token = _s("TELEGRAM_TOKEN")
+        cfg.telegram_chat_id = _s("TELEGRAM_CHAT_ID")
 
         cfg.web_enabled = _b("WEB_ENABLED", cfg.web_enabled)
-        cfg.web_host = os.getenv("WEB_HOST", cfg.web_host)
+        cfg.web_host = _s("WEB_HOST", cfg.web_host)
         cfg.web_port = _i("WEB_PORT", cfg.web_port)
-        cfg.web_password = os.getenv("WEB_PASSWORD", "")
+        cfg.web_password = _s("WEB_PASSWORD")
 
         cfg.candle_timeframe = _i("CANDLE_TIMEFRAME", cfg.candle_timeframe)
         cfg.poll_interval = _f("POLL_INTERVAL", cfg.poll_interval)
-        cfg.strategy_mode = os.getenv("STRATEGY_MODE", cfg.strategy_mode)
-        cfg.trend.mode = os.getenv("TREND_MODE", cfg.trend.mode)
+        cfg.strategy_mode = _s("STRATEGY_MODE", cfg.strategy_mode)
+        cfg.trend.mode = _s("TREND_MODE", cfg.trend.mode)
 
         cfg.risk.base_stake = _f("BASE_STAKE", cfg.risk.base_stake)
         cfg.risk.daily_loss_cap = _f("DAILY_LOSS_CAP", cfg.risk.daily_loss_cap)
