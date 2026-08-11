@@ -115,21 +115,27 @@ instead, rather than silently failing to connect.
 
 ## 4. First run
 
-Before touching credentials you can watch the whole engine offline:
+> **`bash: python: command not found`?** That is normal and nothing is broken.
+> Debian — which is what the Linux on a Chromebook is — ships `python3`, not
+> `python`. On top of that, this bot's dependencies live inside the `.venv`
+> folder rather than system-wide, so even `python3 main.py` is not quite right.
+> Use `bash run.sh`; it works that out for you.
+
+Open the control panel with no account at all — it runs the offline simulator,
+so you can click around safely:
 ```bash
-python demo_run.py          # prints simulated entries/results to the console
-python backtest.py          # strategy stats on synthetic data
+bash run.sh --paper          # then open http://localhost:8080
 ```
 
-You can also open the control panel with no account at all — it runs the offline
-simulator so you can click around safely:
+Then start the real bot (demo balance), once `.env` is filled in:
 ```bash
-python main.py --paper       # then open http://localhost:8080
+bash run.sh
 ```
 
-Then start the real bot (demo balance):
+To watch the engine in the console instead of a browser:
 ```bash
-python main.py
+./.venv/bin/python demo_run.py     # simulated entries/results as text
+./.venv/bin/python backtest.py     # strategy stats on synthetic data
 ```
 
 **Using the panel:** open the printed URL, check the badge says `DEMO`, set your

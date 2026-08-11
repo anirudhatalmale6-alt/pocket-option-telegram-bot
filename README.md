@@ -75,19 +75,39 @@ pocket_bot/
 ## Quick start
 
 ```bash
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
-cp .env.example .env          # then edit .env
-
-# 1) See it work with zero setup — opens the control panel on the simulator:
-python main.py --paper        # then open http://localhost:8080
-
-# 2) Compare strategy settings on data:
-python backtest.py
-
-# 3) Live/demo trading (after filling .env — see docs/SETUP.md):
-python main.py
+bash install.sh          # installs everything, once
+bash run.sh --paper      # practice mode — no account needed
 ```
+
+Then open <http://localhost:8080> and press START.
+
+To update later:
+
+```bash
+bash update.sh           # pull the latest, then bash run.sh
+```
+
+> **On Linux and Chromebooks there is no `python` command — only `python3`** —
+> and the dependencies live in `.venv`, not system-wide. `run.sh` finds the
+> right interpreter itself, which is why every instruction here uses it rather
+> than calling Python directly. If you prefer to do it by hand, the working
+> incantation is `./.venv/bin/python main.py --paper`.
+
+<details>
+<summary>Manual setup, if you would rather not use the scripts</summary>
+
+```bash
+python3 -m venv .venv                        # Windows: py -m venv .venv
+./.venv/bin/python -m pip install -r requirements.txt
+cp .env.example .env                         # then edit .env
+
+./.venv/bin/python main.py --paper           # 1) simulator + control panel
+./.venv/bin/python backtest.py               # 2) compare strategy settings
+./.venv/bin/python main.py                   # 3) demo/live (after .env)
+```
+
+On Windows the interpreter is `.venv\Scripts\python.exe` instead.
+</details>
 
 Full setup — the control panel, the optional Telegram bot, getting your Pocket
 Option SSID, and running 24/7 on a VPS — is in **[docs/SETUP.md](docs/SETUP.md)**.
@@ -105,7 +125,7 @@ no restart. Set `WEB_PASSWORD` in `.env` before exposing the panel on a VPS.
 ## Pick the pair before you pick the strategy
 
 ```bash
-python scan_assets.py
+./.venv/bin/python scan_assets.py
 ```
 
 Payout decides the win rate you need just to break even:

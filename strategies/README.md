@@ -68,7 +68,7 @@ caught the same way: it logs the error and sits that candle out.
 Test it against real history before it sees money:
 
 ```
-python honest_backtest.py
+./.venv/bin/python honest_backtest.py
 ```
 
 That reports a Wilson confidence interval and compares it against the win rate
