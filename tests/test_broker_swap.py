@@ -140,3 +140,46 @@ def test_no_swap_leaves_the_broker_alone():
     original = trader.broker
     asyncio.run(_run_briefly(trader, 0.1))
     assert trader.broker is original
+
+
+# ------------------------------------------------- an empty account is called out
+class EmptyBroker(FakeBroker):
+    async def balance(self):
+        return -1.00
+
+
+def test_an_empty_account_gets_its_own_warning():
+    """
+    A balance of -1.00 came back from the client's real demo account. Without a
+    dedicated line it just scrolls past inside the routine "Connected" message,
+    and then every trade is rejected for reasons nobody can see.
+    """
+    events = []
+    said = []
+    cfg = BotConfig()
+    cfg.poll_interval = 0.01
+    cfg.running = False
+
+    async def notify(msg):
+        said.append(msg)
+
+    trader = Trader(cfg, EmptyBroker("empty", events), notify=notify)
+    asyncio.run(_run_briefly(trader, 0.1))
+
+    assert any("no money in it" in m for m in said)
+
+
+def test_a_funded_account_gets_no_such_warning():
+    events = []
+    said = []
+    cfg = BotConfig()
+    cfg.poll_interval = 0.01
+    cfg.running = False
+
+    async def notify(msg):
+        said.append(msg)
+
+    trader = Trader(cfg, FakeBroker("funded", events), notify=notify)
+    asyncio.run(_run_briefly(trader, 0.1))
+
+    assert not any("no money in it" in m for m in said)

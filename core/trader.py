@@ -132,6 +132,14 @@ class Trader:
                 mode = "DEMO" if self.config.po_demo else "LIVE"
                 self._status(True, bal)
                 await self.notify(f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
+                if bal <= 0:
+                    # Worth its own line. Otherwise every trade is rejected and
+                    # the bot looks broken, when the account is simply empty.
+                    await self.notify(
+                        f"⚠️ This account has no money in it (balance {bal:.2f}). "
+                        f"Trades will be rejected until it is topped up. On a demo "
+                        f"account you can refill it from the Pocket Option website."
+                    )
                 backoff = 2
                 await self._loop()
             except asyncio.CancelledError:

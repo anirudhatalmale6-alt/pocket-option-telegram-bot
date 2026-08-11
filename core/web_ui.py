@@ -919,9 +919,21 @@ function render(s){
     bal.className = 'v';
     balSub.textContent = 'PRETEND money — not your Pocket Option balance. ' +
                          'Nothing here has been sent to Pocket Option.';
+  } else if (s.balance !== null && s.balance <= 0){
+    // A binary-options account cannot really go negative, so a number like
+    // -1.00 is either an empty account or a bad read. Either way, saying it
+    // plainly beats printing it as though it were an ordinary balance and
+    // letting every trade fail for reasons nobody can see.
+    bal.className = 'v neg';
+    balSub.textContent = 'Pocket Option reports no money in this account. ' +
+      'Every trade will be rejected until it has a balance — top the demo back ' +
+      'up on pocketoption.com. If the website shows a healthy balance and this ' +
+      'does not, tell me: that is a bug at my end, not your account.';
   } else if (s.mode === 'DEMO'){
+    bal.className = 'v';
     balSub.textContent = 'your Pocket Option DEMO balance — practice money';
   } else {
+    bal.className = 'v';
     balSub.textContent = 'your REAL Pocket Option money';
   }
 
