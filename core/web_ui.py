@@ -366,10 +366,15 @@ class WebInterface:
                 # Candle size is yours to choose — 30s candles with a 60s expiry
                 # is a perfectly normal pairing. The floor is just a sanity guard
                 # against a typo like 0 or 1, which would poll a live feed flat out.
-                if v < 5:
+                # Pocket Option only serves these sizes. Anything else returns an
+                # empty candle list, which on screen is indistinguishable from a
+                # dead connection — so refuse it here, where it can be explained.
+                allowed_tf = (5, 15, 30, 60, 300)
+                if v not in allowed_tf:
                     return {"ok": False, "message":
-                            "Candle size must be at least 5 seconds — below that the bot "
-                            "would hammer the feed and get the connection dropped."}
+                            f"Pocket Option only provides these candle sizes: "
+                            f"{', '.join(str(t) for t in allowed_tf)} seconds. "
+                            f"Anything else comes back with no data at all."}
                 c.candle_timeframe = v
                 changed.append(f"candle {v}s")
 
@@ -661,7 +666,16 @@ PAGE = r"""<!doctype html>
         <div class="sub"><a href="#" onclick="loadPayouts();return false;">Show live payouts &rarr;</a></div></div>
       <div><label for="f-stake">Stake per trade ($)</label><input id="f-stake" type="number" step="0.01" min="0.01"></div>
       <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div></div>
-      <div><label for="f-timeframe">Candle size (seconds)</label><input id="f-timeframe" type="number" min="5" step="1"><div class="sub">Can be shorter than the expiry, e.g. 30</div></div>
+      <div><label for="f-timeframe">Candle size (seconds)</label>
+        <select id="f-timeframe">
+          <option value="5">5 seconds</option>
+          <option value="15">15 seconds</option>
+          <option value="30">30 seconds</option>
+          <option value="60">60 seconds (1 minute)</option>
+          <option value="300">300 seconds (5 minutes)</option>
+        </select>
+        <div class="sub">Only these are available — Pocket Option serves no others.
+          Can be shorter than the expiry.</div></div>
       <div><label for="f-loss">Stop after losing ($)</label><input id="f-loss" type="number" step="0.01" min="0"></div>
       <div><label for="f-target">Stop after winning ($, 0 = off)</label><input id="f-target" type="number" step="0.01" min="0"></div>
       <div>

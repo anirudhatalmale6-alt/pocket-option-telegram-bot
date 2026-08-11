@@ -46,9 +46,15 @@ except Exception:  # pragma: no cover - depends on optional install
 
 
 class PocketOptionBroker(Broker):
-    # Pocket Option's newest candle is still forming; the trader discards it and
-    # only acts on candles that have closed. See Broker.LAST_CANDLE_IS_PARTIAL.
-    LAST_CANDLE_IS_PARTIAL = True
+    # get_candles() returns CLOSED candles only — the library's own docstring is
+    # explicit that it "does not include the current forming candle". So there is
+    # no partial bar to discard here, and discarding one would throw away the
+    # freshest close and leave every decision a full candle late.
+    LAST_CANDLE_IS_PARTIAL = False
+
+    # Candle sizes Pocket Option actually serves. Asking for anything else comes
+    # back empty, which looks exactly like a dead connection.
+    SUPPORTED_TIMEFRAMES = (1, 5, 15, 30, 60, 300)
 
     def __init__(self, ssid: str, demo: bool = True, uid: int = 0):
         if not ssid:
@@ -83,8 +89,22 @@ class PocketOptionBroker(Broker):
 
     async def get_candles(self, asset: str, timeframe: int, count: int) -> List[Candle]:
         client = self._require()
-        # Returns a list of dicts with time/open/high/low/close keys.
-        raw = await client.get_candles(asset, timeframe, count * timeframe)
+        if timeframe not in self.SUPPORTED_TIMEFRAMES:
+            raise ValueError(
+                f"Pocket Option does not serve {timeframe}s candles. Pick one of: "
+                f"{', '.join(str(t) for t in self.SUPPORTED_TIMEFRAMES)} "
+                f"(change 'Candle size' in the control panel)."
+            )
+        # The library's signature reads get_candles(asset, period, offset), and
+        # its own docstring defines them as:
+        #     period = how many SECONDS OF HISTORY to fetch
+        #     offset = the CANDLE SIZE in seconds
+        # Those names invite exactly the mistake this line used to make: passing
+        # (timeframe, count * timeframe) asked for 60 seconds of history sliced
+        # into 12,000-second candles, which comes back empty every single time.
+        # The bot then sat on "waiting for the first candle to close" forever
+        # while looking perfectly healthy.
+        raw = await client.get_candles(asset, count * timeframe, timeframe)
         candles: List[Candle] = []
         for c in raw[-count:]:
             candles.append(Candle(
