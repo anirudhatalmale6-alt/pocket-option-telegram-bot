@@ -29,32 +29,63 @@ if ! command -v python3 >/dev/null 2>&1; then
 fi
 ok "$(python3 --version)"
 
-# Note on the check below: `python3 -m venv --help` succeeds on Debian even when
-# the python3-venv package is missing, and the failure only shows up partway
-# through creation — leaving behind a .venv DIRECTORY with no interpreter in it.
-# So we test for a usable interpreter, not for the directory, and we clear out
-# any half-built one before retrying. (This is exactly what bit the first run.)
+# Debian/ChromeOS notes, learned the hard way on a real Chromebook:
+#   * `python3 -m venv --help` succeeds even when the python3-venv package is
+#     missing, so a --help preflight proves nothing.
+#   * A failed creation still leaves a .venv DIRECTORY behind, so testing for
+#     the directory makes every later run skip the repair it needs.
+#   * Worst of all, creation can SUCCEED and still give you a venv with no pip
+#     in it (Debian ships ensurepip separately). Every later step then dies on
+#     "No module named pip".
+# So the only check worth trusting is: can this environment actually run pip?
+venv_ok() {
+    [ -x .venv/bin/python ] && .venv/bin/python -m pip --version >/dev/null 2>&1
+}
+
 say "Creating the virtual environment (.venv)..."
-if [ ! -x .venv/bin/python ]; then
+if ! venv_ok; then
     if [ -e .venv ]; then
-        warn "found an incomplete .venv from an earlier attempt — rebuilding it"
+        warn "found an unusable .venv from an earlier attempt — rebuilding it"
         rm -rf .venv
     fi
-    if ! python3 -m venv .venv >/dev/null 2>&1; then
-        say "Installing the missing Python venv package..."
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq python3-venv python3-pip
-        rm -rf .venv
-        python3 -m venv .venv
-    fi
+    python3 -m venv .venv >/dev/null 2>&1 || true
 fi
-if [ ! -x .venv/bin/python ]; then
-    echo "Could not create the virtual environment. Send me this whole window." >&2
+
+if ! venv_ok; then
+    say "Installing the Python venv/pip packages (you may be asked for your password)..."
+    PYV=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/null || echo "3")
+    sudo apt-get update -qq || true
+    # The versioned name is the one that actually matters on Debian testing.
+    sudo apt-get install -y -qq python3-venv python3-pip "python${PYV}-venv" || \
+        sudo apt-get install -y -qq python3-venv python3-pip || true
+    rm -rf .venv
+    python3 -m venv .venv >/dev/null 2>&1 || true
+fi
+
+if ! venv_ok && [ -x .venv/bin/python ]; then
+    warn "environment has no pip — bootstrapping it"
+    .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
+fi
+
+if ! venv_ok && [ -x .venv/bin/python ]; then
+    # Last resort: fetch pip's official bootstrap script.
+    warn "fetching pip directly"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py 2>/dev/null || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO /tmp/get-pip.py https://bootstrap.pypa.io/get-pip.py 2>/dev/null || true
+    fi
+    [ -s /tmp/get-pip.py ] && .venv/bin/python /tmp/get-pip.py >/dev/null 2>&1 || true
+    rm -f /tmp/get-pip.py
+fi
+
+if ! venv_ok; then
+    echo >&2
+    echo "Could not build a working Python environment." >&2
+    echo "Please send me a photo of this whole window and I will sort it." >&2
     exit 1
 fi
-# A venv can exist without pip (--without-pip, or a trimmed distro python).
-[ -x .venv/bin/pip ] || .venv/bin/python -m ensurepip --upgrade >/dev/null 2>&1 || true
-ok "virtual environment ready"
+ok "virtual environment ready (pip $(.venv/bin/python -m pip --version | cut -d' ' -f2))"
 
 say "Installing the bot's dependencies (this takes a minute or two)..."
 .venv/bin/python -m pip install --quiet --upgrade pip
