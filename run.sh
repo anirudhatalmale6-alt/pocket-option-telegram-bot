@@ -38,9 +38,6 @@ if ! "$PY" -c "import dotenv" >/dev/null 2>&1; then
     exit 1
 fi
 
-# `|| true` matters: with `set -e` plus `pipefail`, a grep that simply finds
-# nothing (no .env, or no WEB_PORT line in it) would abort the whole script
-# before the bot ever starts — and print nothing at all while doing it.
 # Say so when this copy is out of date. Nearly every "the thing you described
 # isn't on my screen" turns out to be old code, and there was previously no way
 # to tell from the panel — you just saw a feature missing and assumed it was
@@ -58,8 +55,42 @@ if command -v git >/dev/null 2>&1 && [ -d .git ]; then
     fi
 fi
 
+# `|| true` matters: with `set -e` plus `pipefail`, a grep that simply finds
+# nothing (no .env, or no WEB_PORT line in it) would abort the whole script
+# before the bot ever starts — and print nothing at all while doing it.
 PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
 PORT=${PORT:-8080}
+
+# "Address already in use" is a stack trace that means something reassuring:
+# the bot is ALREADY RUNNING, in a terminal window you forgot about. Said in
+# Python's words it reads like a crash, so say it in plain ones instead.
+#
+# Deliberately does NOT kill the other process. That copy may have a trade open
+# on a real account, and silently killing it to free a port would be a far worse
+# outcome than being told to go and close it yourself.
+if ! "$PY" - "$PORT" <<'PYEOF' 2>/dev/null
+import socket, sys
+sock = socket.socket()
+try:
+    sock.bind(("127.0.0.1", int(sys.argv[1])))
+except OSError:
+    sys.exit(1)
+finally:
+    sock.close()
+PYEOF
+then
+    echo "The bot looks like it is already running." >&2
+    echo >&2
+    echo "  To use the one that is already going:" >&2
+    echo "      open  http://localhost:${PORT}  in Chrome" >&2
+    echo >&2
+    echo "  To restart it instead:" >&2
+    echo "      find the other terminal window, press Ctrl+C there," >&2
+    echo "      then run this again." >&2
+    echo >&2
+    echo "(Nothing is broken, and you do not need to log out of anything.)" >&2
+    exit 1
+fi
 
 echo "Starting. When it says 'Control panel', open Chrome at:"
 echo "    http://localhost:${PORT}"

@@ -155,6 +155,31 @@ a message on every trade entry and result. Tune anything live, e.g.:
 
 ---
 
+## Things that look like errors but are not
+
+**`bash: python: command not found`** — Debian (and a Chromebook's Linux) has
+`python3`, not `python`, and this bot's dependencies live in `.venv`. Use
+`bash run.sh`.
+
+**`cd` printed nothing** — that is what success looks like. `cd` never prints
+anything. Check the text before your cursor: it now ends in the folder name.
+
+**`Address already in use`** — the bot is already running in another terminal
+window. Nothing is broken and you do not need to log out of anything. Either
+open <http://localhost:8080> and use the one already going, or press `Ctrl+C` in
+that other window first. `run.sh` now says this in plain English instead of
+showing you a stack trace.
+
+**The panel looks unchanged after an update** — your browser cached it. Press
+`Ctrl+Shift+R` on the page.
+
+**"Show live payouts" seems to hang** — it is asking Pocket Option for the live
+table, which takes five to ten seconds. It says "Asking Pocket Option…" while it
+works.
+
+**A feature I described is not on your screen** — you are probably on an older
+version. `run.sh` warns you about this at startup now; `bash update.sh` fixes it.
+
 ## 5. Run 24/7 on a Linux VPS
 
 Use `systemd` so it restarts on crash/reboot. Create
