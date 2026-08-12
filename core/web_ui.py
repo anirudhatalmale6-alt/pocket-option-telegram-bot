@@ -58,6 +58,9 @@ class WebInterface:
         self.connected = False
         self.paper = False          # True when running without a real account
         self.practice_note = ""     # what KIND of practice data, set by main.py
+        # Verify a pasted cookie against Pocket Option to find its real account
+        # id. Switched off in tests, which must never touch the network.
+        self.auto_discover = True
         self._log: List[dict] = []  # newest-last ring buffer of event lines
         self._assets_cache: List[dict] = []   # live payout table
         self._assets_at = 0.0                 # when we last fetched it
@@ -234,30 +237,56 @@ class WebInterface:
         # Validate BEFORE writing anything. ssid.normalise knows the difference
         # between the trading token and the chart token that gets copied by
         # mistake, and explains which is which — far better than saving a broken
-        # value and surfacing it later as a silent failure to connect.
+        # value and surfacing it later as a silent failure to connect. uid 1 is
+        # a stand-in purely so the shape check runs when no id was typed; the
+        # real id is discovered below.
         from .ssid import SsidError, normalise
         try:
-            normalise(session, uid=uid, demo=demo)
+            normalise(session, uid=uid or 1, demo=demo)
         except SsidError as exc:
             return {"ok": False, "message": str(exc)}
 
+        # Save straight away when an id was supplied, so a restart is never left
+        # with nothing, then check it in the background. With no id there is
+        # nothing worth writing yet — discovery supplies it.
+        result = (self._save_account(session, uid, demo) if uid else
+                  {"ok": True, "message": "Working out which account this cookie "
+                                          "belongs to — watch the log below."})
+
+        # Verify rather than trust. Getting the account id out of DevTools is the
+        # single worst step in setting this up, and a mismatched one is refused
+        # in complete silence — so the panel works it out itself. On a thread,
+        # because each combination takes a few seconds and the page must not hang.
+        self._discover_async(session, uid, demo)
+        return result
+
+    def _save_account(self, session: str, uid: int, demo: bool) -> dict:
+        """Write the details to .env, point the config at them, and reconnect."""
+        c = self.config
         try:
             from .envfile import update
-            # PO_SSID is blanked deliberately. config.from_env reads
+            from .ssid import _canonical
+            # PO_SSID is normally blanked deliberately. config.from_env reads
             #   po_ssid = PO_SSID or PO_SESSION
             # so a leftover PO_SSID from an earlier attempt would silently win
             # over what was just typed here, and the panel would look like it
             # had saved something it had not.
+            #
+            # The exception is uid 0, which means discovery found that Pocket
+            # Option accepts this session without an account id at all. The
+            # cookie-plus-uid route cannot express that, so store the finished
+            # auth frame instead — it is the only form that survives a restart.
+            ssid = _canonical(session, 0, demo) if uid == 0 else ""
             update({"PO_SESSION": session, "PO_UID": str(uid),
                     "PO_DEMO": "true" if demo else "false",
-                    "PO_SSID": ""})
+                    "PO_SSID": ssid})
         except OSError as exc:
             # Say it did not save. Claiming success here would be the worst
             # possible outcome: he restarts and it is still not connected.
             return {"ok": False,
                     "message": f"Could not write the .env file: {exc}"}
 
-        c.po_ssid = session
+        c.po_ssid = ssid or session      # mirrors what was just written to .env
         c.po_uid = uid
         c.po_demo = demo
         self.paper = False
@@ -277,6 +306,48 @@ class WebInterface:
                                f"({exc}). Restart with: bash run.sh"}
         return {"ok": True, "message": "Saved. Connecting to your Pocket Option "
                                        "account now — watch the badge at the top."}
+
+    def _discover_async(self, session: str, uid: int, demo: bool) -> None:
+        """Run the account search on its own thread, logging as it goes."""
+        import threading
+
+        if not self.auto_discover:      # off in tests; this step talks to the network
+            return
+
+        def work() -> None:
+            import asyncio as _aio
+            from .discover import find_account
+            self.log("Working out which Pocket Option account this cookie opens…")
+            try:
+                found = _aio.run(find_account(session, uid_hint=uid,
+                                              demo_hint=demo, log=self.log))
+            except Exception as exc:
+                self.log(f"Could not check the account: {type(exc).__name__}: {exc}")
+                found = None
+
+            if found is None:
+                # Every combination refused means the cookie is dead — a wrong
+                # account id would have been fixed by one of the four attempts.
+                # Say that plainly instead of leaving a silent 'Connecting…'.
+                self.log("⚠️ Pocket Option refused every combination. That means "
+                         "the cookie itself has expired, not that the account id "
+                         "is wrong. Log in to pocketoption.com, copy a FRESH "
+                         "ci_session cookie, paste it here — and do not log out "
+                         "afterwards, because logging out kills it.")
+                return
+
+            if found.balance > 0:
+                self.log(f"✓ Found it — your {found.label}, "
+                         f"balance {found.balance:,.2f}.")
+            else:
+                self.log(f"✓ Pocket Option accepted your {found.label}, but there "
+                         f"is no money in it.")
+            res = self._save_account(session, found.uid, found.demo)
+            if not res.get("ok"):
+                self.log(res.get("message", "Could not save the account details."))
+
+        threading.Thread(target=work, daemon=True,
+                         name="po-account-discovery").start()
 
     # ------------------------------------------------------------ commands
     def command(self, body: dict) -> dict:
@@ -633,13 +704,17 @@ PAGE = r"""<!doctype html>
           <b>ci_session</b>. It is a password: it is stored on this computer only
           and never shown again.</div>
       </div>
-      <div><label for="f-uid">Account id (uid)</label><input id="f-uid" type="text" inputmode="numeric">
+      <div><label for="f-uid">Account id (uid) &mdash; optional</label>
+        <input id="f-uid" type="text" inputmode="numeric" placeholder="leave blank — it works this out">
         <div class="sub">Pocket Option gives your DEMO and your REAL balance
-          <b>different</b> ids. Using the wrong one is refused silently — you get
-          "not logged in" and no prices, with nothing to say why.</div></div>
+          <b>different</b> ids, and the wrong one is refused in silence. So you no
+          longer have to find it: leave this blank and the panel tries each
+          combination against your cookie and keeps whichever one answers.</div></div>
       <div>
         <label>Which balance</label>
         <div class="row"><input type="checkbox" id="f-demo" checked><label for="f-demo">Demo — practice money (recommended)</label></div>
+        <div class="sub">A preference, not a requirement — it is tried first, and
+          the other one is tried if it is refused.</div>
       </div>
     </div>
     <div class="btns" style="margin-top:14px">
@@ -902,7 +977,10 @@ function render(s){
   // Connection card. Says what IS set without ever restating the secret.
   const cs = document.getElementById('conn-state');
   if (s.session_set){
-    cs.textContent = 'Connected details are saved (account ' + s.uid + ', ' +
+    // 'account 0' would read as an account called zero. It means no id was
+    // needed, which is a fine outcome, so say that instead.
+    cs.textContent = 'Connected details are saved (' +
+      (s.uid ? 'account ' + s.uid : 'no account id needed') + ', ' +
       (s.demo ? 'demo balance' : 'REAL money') + '). ' +
       (s.connected ? 'Pocket Option is responding.'
                    : 'Not responding yet — if this does not clear, the cookie has expired; paste a fresh one.');

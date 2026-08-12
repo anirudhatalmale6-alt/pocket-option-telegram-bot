@@ -31,6 +31,9 @@ def panel(tmp_path, monkeypatch):
     web = WebInterface(BotConfig(), "127.0.0.1", 0, "")
     web.paper = True
     web.env_path = str(tmp_path / ".env")
+    # Saving a cookie normally kicks off a background check against Pocket
+    # Option to confirm which account it opens. Tests must not open sockets.
+    web.auto_discover = False
     return web
 
 
@@ -121,9 +124,40 @@ def test_a_non_numeric_uid_is_refused(panel):
     assert not os.path.exists(panel.env_path)
 
 
-def test_a_missing_uid_is_refused_rather_than_saved_as_zero(panel):
+def test_a_missing_uid_is_now_discovered_rather_than_refused(panel):
+    # It used to be an error, which meant a trip into DevTools to read a
+    # WebSocket frame. The panel finds it instead. Nothing is written until it
+    # knows the answer — saving uid 0 would be refused silently by Pocket Option.
     res = panel.command({"action": "connect", "session": GOOD, "uid": ""})
-    assert res["ok"] is False
+    assert res["ok"] is True
+    assert not os.path.exists(panel.env_path)
+
+
+def test_the_supplied_uid_is_saved_immediately_then_checked(panel):
+    # Saved first so a restart is never left with nothing, and verified after.
+    calls = []
+    panel.auto_discover = True
+    panel._discover_async = lambda *a: calls.append(a)
+
+    panel.command({"action": "connect", "session": GOOD, "uid": "555", "demo": True})
+
+    assert _env(panel)["PO_UID"] == "555"
+    assert calls == [(GOOD, 555, True)]
+
+
+def test_an_account_with_no_id_is_saved_in_a_form_that_survives_a_restart(panel):
+    # If discovery finds Pocket Option accepts the session without an account id,
+    # the cookie-plus-uid pair cannot express that: on the next start the broker
+    # would refuse to build a frame with uid 0. Store the finished frame instead.
+    from core.ssid import normalise
+
+    res = panel._save_account(GOOD, 0, True)
+    assert res["ok"] is True
+    saved = _env(panel)
+    assert saved["PO_SSID"].startswith('42["auth"')
+    assert '"uid":0' in saved["PO_SSID"]
+    # The value written must be one the broker will accept on the next start.
+    assert normalise(saved["PO_SSID"])
 
 
 def test_an_unwritable_env_reports_failure_instead_of_claiming_success(panel, monkeypatch):

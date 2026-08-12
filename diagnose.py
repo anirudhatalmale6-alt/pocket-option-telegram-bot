@@ -197,47 +197,19 @@ async def main() -> int:
         # them rather than asking him to guess. The big one: Pocket Option can
         # issue DIFFERENT account ids for the demo and the real balance, so a
         # uid lifted from one will be rejected by the other.
+        # Same search the control panel runs when you press Save & connect, so
+        # the two can never disagree about which account works.
         step("3b", "Trying other login combinations to find one that is accepted")
-        alternatives = [
-            (not cfg.po_demo, cfg.po_uid,
-             f"the {'REAL' if cfg.po_demo else 'DEMO'} balance instead"),
-            (cfg.po_demo, 0, "without the account id"),
-        ]
-        found = None
-        for demo_flag, uid, label in alternatives:
-            info(f"trying {label}...")
-            try:
-                alt = PocketOptionBroker(cfg.po_ssid, demo=demo_flag, uid=uid)
-            except SsidError as exc:
-                info(f"  cannot build that combination: {exc}")
-                continue
-            try:
-                good, _res, _s = await timed("connect", alt.connect(), 20)
-                if not good:
-                    info("  could not connect")
-                    continue
-                bal_alt = None
-                for _ in range(4):
-                    good, res, _s = await timed("balance", alt.balance(), 10)
-                    if good and isinstance(res, float) and res > 0:
-                        bal_alt = res
-                        break
-                    await asyncio.sleep(1)
-                if bal_alt is not None:
-                    ok(f"THIS ONE WORKS — balance {bal_alt:,.2f}")
-                    found = (demo_flag, uid, label)
-                    break
-                info("  refused as well")
-            finally:
-                await alt.close()
+        from core.discover import find_account
+        found = await find_account(cfg.po_ssid, uid_hint=cfg.po_uid,
+                                   demo_hint=cfg.po_demo, log=info)
 
         if found:
-            demo_flag, uid, label = found
             say()
-            say(f"FOUND IT: Pocket Option accepts {label}.")
-            say(f"  Set PO_DEMO={'true' if demo_flag else 'false'}"
-                f"{'' if uid else ' and clear PO_UID'} and it will connect.")
-            say("  Send me this and I will make the panel do it for you.")
+            say(f"FOUND IT: Pocket Option accepts your {found.label}.")
+            say(f"  Balance {found.balance:,.2f}.")
+            say("  Paste your cookie into the control panel and it will save")
+            say("  these settings for you automatically.")
         else:
             info("none of the alternatives were accepted either — the cookie")
             info("itself is stale. Grab a fresh one while logged in, and do")

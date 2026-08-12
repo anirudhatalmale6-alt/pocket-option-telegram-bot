@@ -61,6 +61,11 @@ _CHART_HELP = (
 )
 
 
+def _has_session_shape(value: str) -> bool:
+    """True if `value` really is a PHP session blob, encoded or not."""
+    return bool(_PHP_SESSION_RE.match(unquote(value or "")))
+
+
 def _canonical(session: str, uid: int, demo: bool) -> str:
     """Build the exact auth frame the trading socket expects."""
     payload = {
@@ -121,7 +126,11 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
             uid_val = int(str(raw_uid).strip() or 0)
         except ValueError:
             uid_val = uid
-        if not uid_val:
+        if not uid_val and not _has_session_shape(str(session)):
+            # A frame carrying a real session blob but no uid is one core/discover.py
+            # built on purpose, to test whether Pocket Option derives the account
+            # from the session alone. Trust it. Anything else with a missing uid is
+            # a human copying the wrong line, and still gets told so.
             raise SsidError("The auth line has no uid — set PO_UID to your account id.")
         demo_val = bool(obj.get("isDemo", 1 if demo else 0))
         return _canonical(str(session), uid_val, demo_val)
@@ -143,6 +152,22 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
             "(the numeric uid shown in the auth frame / your PO profile)."
         )
     return _canonical(candidate, uid, demo)
+
+
+def session_value(raw: str) -> str:
+    """
+    Return just the session blob, whether `raw` is a whole auth frame or the
+    bare ci_session cookie.
+
+    core/discover.py rebuilds the auth frame with different uid/isDemo values, so
+    it needs the session on its own. Feeding it a frame by mistake would nest one
+    inside the other and every combination would be refused for the wrong reason.
+    """
+    raw = (raw or "").strip().strip('"').strip("'")
+    obj = _extract_json(raw)
+    if obj is not None and obj.get("session"):
+        return str(obj["session"])
+    return raw
 
 
 def looks_like_chart_token(raw: str) -> bool:

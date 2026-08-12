@@ -10,12 +10,24 @@ Start the bot (`bash run.sh --paper`), open the panel, and use the **Your Pocket
 Option account** card near the top:
 
 1. Paste the `ci_session` cookie (step 1 below explains where to find it).
-2. Put your account id in the second box.
+2. **Leave the account id box empty.**
 3. Leave **Demo** ticked.
 4. Press **Save & connect**.
 
 That writes the `.env` file for you, with the right permissions, and reconnects
 without a restart. You never have to open a hidden file or use a text editor.
+
+**You do not need to find your account id.** There are only four combinations of
+id and demo/real flag, so the panel tries them against your cookie and keeps
+whichever one Pocket Option answers — logging each attempt as it goes. Finding
+that id by hand means reading a WebSocket frame in DevTools, and a wrong one is
+refused in complete silence. That is what step 2b below is for, and it is now a
+fallback, not a requirement.
+
+If every combination is refused, the log says so plainly. That means the cookie
+itself has expired — a different id would not have helped — so get a fresh one
+and **do not log out afterwards**, because logging out kills the session you
+just copied.
 
 If you paste the wrong token by mistake — there are two, and they look alike —
 it tells you which one you grabbed and what to look for instead, *before* saving
@@ -62,10 +74,11 @@ document.cookie.match(/uid=(\d+)/)?.[1] || 'not found — see below'
 
 If that prints `not found`, use step 2b.
 
-## 2b. The reliable way: read the auth frame
+## 2b. Fallback: read the auth frame yourself
 
-This gets the id **and** the demo/real flag as a matching pair, exactly as the
-browser sends them. Worth doing if anything is refused.
+Only needed if the panel cannot find a working combination *and* you believe the
+cookie is fresh. It gets the id **and** the demo/real flag as a matching pair,
+exactly as the browser sends them.
 
 1. DevTools → **Network** tab.
 2. In the row of type buttons (All, Fetch/XHR, Doc, …) click **Socket**. Make

@@ -81,6 +81,27 @@ class PocketOptionBroker(Broker):
         self._stream_started = 0.0   # when the current stream opened
         self._closed_candles: List[dict] = []
 
+    @classmethod
+    def from_auth_frame(cls, frame: str) -> "PocketOptionBroker":
+        """
+        Build a broker from an already-canonical 42["auth",{…}] string.
+
+        normalise() refuses a frame whose uid is 0, because for a human pasting
+        a cookie that is a mistake worth catching. core/discover.py deliberately
+        tries uid 0 — to find out whether Pocket Option derives the account from
+        the session alone — so it needs a way past that check.
+        """
+        broker = cls.__new__(cls)
+        broker._ssid = frame
+        broker._demo = '"isDemo":1' in frame
+        broker._client = None
+        broker._stream_task = None
+        broker._stream_key = None
+        broker._stream_error = ""
+        broker._stream_started = 0.0
+        broker._closed_candles = []
+        return broker
+
     async def connect(self) -> None:
         if not _HAVE_LIB:
             raise RuntimeError(
