@@ -633,7 +633,10 @@ PAGE = r"""<!doctype html>
           <b>ci_session</b>. It is a password: it is stored on this computer only
           and never shown again.</div>
       </div>
-      <div><label for="f-uid">Account id (uid)</label><input id="f-uid" type="text" inputmode="numeric"></div>
+      <div><label for="f-uid">Account id (uid)</label><input id="f-uid" type="text" inputmode="numeric">
+        <div class="sub">Pocket Option gives your DEMO and your REAL balance
+          <b>different</b> ids. Using the wrong one is refused silently — you get
+          "not logged in" and no prices, with nothing to say why.</div></div>
       <div>
         <label>Which balance</label>
         <div class="row"><input type="checkbox" id="f-demo" checked><label for="f-demo">Demo — practice money (recommended)</label></div>

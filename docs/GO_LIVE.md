@@ -45,15 +45,52 @@ It is a long string that starts with `a%3A4%3A%7B`.
 
 ## 2. Find your account id
 
+> **The demo and the real balance have DIFFERENT account ids.** Using the real
+> account's id while asking for the demo is refused — and refused *silently*:
+> the socket still opens, the balance reads `-1.00`, and no candles ever arrive.
+> Nothing on screen says "wrong id". If you are setting up the demo, take the id
+> from a session where you were **on the demo account**.
+>
+> The most reliable way to get a matching pair of id and flag is the auth frame
+> in step 2b below, because the browser sends all of it together.
+
 In the same DevTools window, click the **Console** tab, paste this, press Enter:
 
 ```js
 document.cookie.match(/uid=(\d+)/)?.[1] || 'not found — see below'
 ```
 
-If that prints `not found`, get it from the **Network → WS** tab instead: click
-the connection carrying a `451-["successauth",…]` message, and the green
-`42["auth",{…}]` line just above it contains `"uid":123456789`.
+If that prints `not found`, use step 2b.
+
+## 2b. The reliable way: read the auth frame
+
+This gets the id **and** the demo/real flag as a matching pair, exactly as the
+browser sends them. Worth doing if anything is refused.
+
+1. DevTools → **Network** tab.
+2. In the row of type buttons (All, Fetch/XHR, Doc, …) click **Socket**. Make
+   sure the filter box to the left is **empty** — typing there filters the list
+   of connections by name, hides everything, and looks like a broken DevTools.
+3. Press `Ctrl+R` to reload. DevTools only records from the moment it is
+   watching, so the login is missed unless you reload with it open.
+4. Three or so connections appear. The trading one is whichever contains a
+   message reading `451-["successauth",…]`. The others are just the chart.
+5. Click it → **Messages** → scroll to the **top**.
+6. Find the **green** (outgoing) line beginning `42["auth",{…}]`.
+
+Inside it:
+
+```
+42["auth",{"session":"a%3A4%3A%7B…","isDemo":1,"uid":123456789,"platform":2}]
+                                     ^^^^^^^^^  ^^^^^^^^^^^^^^
+                                     these two are what you need
+```
+
+`isDemo:1` means that id belongs to the **demo** balance, `isDemo:0` the real
+one. They must match what you put in `.env`.
+
+That line contains your session, which is a password — don't paste it into a
+chat, a ticket or a screenshot without covering it.
 
 ## 3. Put both in `.env`
 
