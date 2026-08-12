@@ -20,6 +20,7 @@ Design notes:
 from __future__ import annotations
 
 import json
+import sys
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -532,12 +533,18 @@ class WebInterface:
 
             # -- helpers
             def _send(self, code: int, payload: bytes, ctype: str) -> None:
-                self.send_response(code)
-                self.send_header("Content-Type", ctype)
-                self.send_header("Content-Length", str(len(payload)))
-                self.send_header("Cache-Control", "no-store")
-                self.end_headers()
-                self.wfile.write(payload)
+                try:
+                    self.send_response(code)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(payload)))
+                    self.send_header("Cache-Control", "no-store")
+                    self.end_headers()
+                    self.wfile.write(payload)
+                except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                    # The browser went away mid-response — a refresh or a closed
+                    # tab. Normal, and nothing to report: the alternative is a
+                    # traceback in the terminal that reads like a crash.
+                    return
 
             def _json(self, code: int, obj: dict) -> None:
                 self._send(code, json.dumps(obj).encode(), "application/json")
@@ -580,8 +587,25 @@ class WebInterface:
                     return
                 self._json(200, iface.command(body))
 
-        self._server = ThreadingHTTPServer((self.host, self.port), Handler)
-        self._server.daemon_threads = True
+        class QuietServer(ThreadingHTTPServer):
+            """
+            A disconnected browser is not an error worth printing.
+
+            socketserver's default handle_error dumps a full traceback to the
+            terminal. Refreshing the page is enough to trigger one, and to
+            somebody watching that window it looks exactly like the bot
+            crashing — which is how it was reported.
+            """
+            daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                exc = sys.exc_info()[1]
+                if isinstance(exc, (BrokenPipeError, ConnectionResetError,
+                                    ConnectionAbortedError)):
+                    return
+                super().handle_error(request, client_address)
+
+        self._server = QuietServer((self.host, self.port), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         self.log(f"Control panel running on http://{self.host}:{self.port}")
 
