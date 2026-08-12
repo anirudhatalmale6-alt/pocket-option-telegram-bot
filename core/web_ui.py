@@ -938,16 +938,20 @@ function render(s){
     bal.className = 'v';
     balSub.textContent = 'PRETEND money — not your Pocket Option balance. ' +
                          'Nothing here has been sent to Pocket Option.';
-  } else if (s.balance !== null && s.balance <= 0){
-    // A binary-options account cannot really go negative, so a number like
-    // -1.00 is either an empty account or a bad read. Either way, saying it
-    // plainly beats printing it as though it were an ordinary balance and
-    // letting every trade fail for reasons nobody can see.
+  } else if (s.balance !== null && s.balance < 0){
+    // Reproduced with a deliberately invalid token: the socket opens, then the
+    // balance is -1.00 for ever and no candle ever arrives. A negative balance
+    // is impossible on a real account — this is "login refused", not "no money".
     bal.className = 'v neg';
-    balSub.textContent = 'Pocket Option reports no money in this account. ' +
-      'Every trade will be rejected until it has a balance — top the demo back ' +
-      'up on pocketoption.com. If the website shows a healthy balance and this ' +
-      'does not, tell me: that is a bug at my end, not your account.';
+    bal.textContent = 'not logged in';
+    balSub.textContent = 'Pocket Option is not accepting your session cookie, so ' +
+      'there is no balance and no price data. Sign in at pocketoption.com, copy a ' +
+      'fresh ci_session cookie into the box above — and do NOT log out afterwards, ' +
+      'because logging out cancels the cookie you just pasted.';
+  } else if (s.balance !== null && s.balance === 0){
+    bal.className = 'v neg';
+    balSub.textContent = 'this account is empty — every trade will be rejected ' +
+      'until it is topped up. A demo balance can be refilled on pocketoption.com.';
   } else if (s.mode === 'DEMO'){
     bal.className = 'v';
     balSub.textContent = 'your Pocket Option DEMO balance — practice money';

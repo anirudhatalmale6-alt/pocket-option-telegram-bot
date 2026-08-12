@@ -142,19 +142,20 @@ def test_no_swap_leaves_the_broker_alone():
     assert trader.broker is original
 
 
-# ------------------------------------------------- an empty account is called out
-class EmptyBroker(FakeBroker):
+# ---------------------------------- a refused login and an empty account differ
+class UnauthorisedBroker(FakeBroker):
+    """-1.00 is what the library returns when the session was never authorised."""
     async def balance(self):
         return -1.00
 
 
-def test_an_empty_account_gets_its_own_warning():
-    """
-    A balance of -1.00 came back from the client's real demo account. Without a
-    dedicated line it just scrolls past inside the routine "Connected" message,
-    and then every trade is rejected for reasons nobody can see.
-    """
-    events = []
+class EmptyBroker(FakeBroker):
+    """0.00 is a real account that genuinely has no money in it."""
+    async def balance(self):
+        return 0.00
+
+
+def _said_on_connect(broker_cls):
     said = []
     cfg = BotConfig()
     cfg.poll_interval = 0.01
@@ -163,11 +164,28 @@ def test_an_empty_account_gets_its_own_warning():
     async def notify(msg):
         said.append(msg)
 
-    trader = Trader(cfg, EmptyBroker("empty", events), notify=notify)
+    trader = Trader(cfg, broker_cls("b", []), notify=notify)
     trader.balance_attempts, trader.balance_delay = 2, 0.01   # do not sleep for real
     asyncio.run(_run_briefly(trader, 0.2))
+    return said
 
+
+def test_a_negative_balance_is_reported_as_a_refused_login():
+    """
+    Reproduced with a deliberately invalid token: connect() succeeds, balance
+    returns -1.00 for ever, and no candle arrives. Calling that "no money in the
+    account" sent the client hunting for a top-up button that would not have
+    helped — the session simply was not authorised.
+    """
+    said = _said_on_connect(UnauthorisedBroker)
+    assert any("NOT accepting your login" in m for m in said)
+    assert any("do NOT log out" in m for m in said), "name the usual cause"
+
+
+def test_a_zero_balance_is_reported_as_an_empty_account():
+    said = _said_on_connect(EmptyBroker)
     assert any("no money in it" in m for m in said)
+    assert not any("NOT accepting your login" in m for m in said)
 
 
 def test_a_funded_account_gets_no_such_warning():

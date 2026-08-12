@@ -231,3 +231,54 @@ def test_an_unsupported_candle_size_is_refused_with_an_explanation(tf):
     with pytest.raises(ValueError) as err:
         asyncio.run(broker.get_candles("EURUSD_otc", tf, 50))
     assert "60" in str(err.value)
+
+
+# ------------------------------------------- a feed that opens but never delivers
+class SilentClient(FakeClient):
+    """Opens fine, then delivers nothing — what an unauthorised session does."""
+
+    def get_candles_live(self, asset, period, hours=2.0, max_rows=100):
+        self.subscriptions += 1
+        self.calls.append({"asset": asset, "period": period,
+                           "hours": hours, "max_rows": max_rows})
+
+        async def gen():
+            while True:            # never yields a batch
+                await asyncio.sleep(0.01)
+            yield [], None         # pragma: no cover - unreachable, keeps it a generator
+
+        return gen()
+
+
+def test_a_stream_that_never_delivers_is_eventually_called_a_fault():
+    """
+    Reproduced against a deliberately invalid token: connect() succeeds, the
+    balance stays -1.00, and the feed opens but sends nothing, with no exception
+    anywhere. Silence has to become a diagnosis or it reads as "still loading"
+    forever — which is precisely the dead end this project sat in.
+    """
+    broker, _client = _broker(SilentClient())
+
+    async def scenario():
+        await broker.get_candles("EURUSD_otc", 60, 200)     # opens the stream
+        broker._stream_started -= broker.STALL_SECONDS + 1  # pretend time passed
+        with pytest.raises(RuntimeError) as err:
+            await broker.get_candles("EURUSD_otc", 60, 200)
+        await broker.close()
+        return str(err.value)
+
+    msg = asyncio.run(scenario())
+    assert "No price data" in msg
+    assert "cookie" in msg, "must point at the usual cause, not just report silence"
+
+
+def test_a_slow_but_working_feed_is_not_called_a_fault_too_early():
+    """A backfill takes a few seconds; that must not be reported as broken."""
+    broker, _client = _broker(SilentClient())
+
+    async def scenario():
+        got = await broker.get_candles("EURUSD_otc", 60, 200)
+        await broker.close()
+        return got
+
+    assert asyncio.run(scenario()) == []       # empty, but no exception raised

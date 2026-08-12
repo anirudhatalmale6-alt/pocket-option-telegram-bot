@@ -30,6 +30,7 @@ Getting your SSID (demo):
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import List
 
 from .broker import Broker, TradeResult
@@ -60,6 +61,10 @@ class PocketOptionBroker(Broker):
     BACKFILL_HOURS = 2.0
     MAX_ROWS = 200
 
+    # How long a freshly opened feed may deliver nothing before we call it a
+    # fault. Generous: a real backfill takes a few seconds, never a minute.
+    STALL_SECONDS = 75.0
+
     def __init__(self, ssid: str, demo: bool = True, uid: int = 0):
         if not ssid:
             raise ValueError("PO_SSID is empty — paste your browser session token (see docs/SETUP.md)")
@@ -73,6 +78,7 @@ class PocketOptionBroker(Broker):
         self._stream_task = None
         self._stream_key = None      # (asset, timeframe) the stream is serving
         self._stream_error = ""      # last failure, surfaced instead of silence
+        self._stream_started = 0.0   # when the current stream opened
         self._closed_candles: List[dict] = []
 
     async def connect(self) -> None:
@@ -95,6 +101,7 @@ class PocketOptionBroker(Broker):
     async def _stop_stream(self) -> None:
         task, self._stream_task = self._stream_task, None
         self._stream_key = None
+        self._stream_started = 0.0
         self._closed_candles = []
         if task and not task.done():
             task.cancel()
@@ -140,6 +147,7 @@ class PocketOptionBroker(Broker):
                 self._stream_error = f"{type(exc).__name__}: {exc}"
         await self._stop_stream()
         self._stream_key = key
+        self._stream_started = time.time()
         self._stream_task = asyncio.create_task(self._pump(asset, timeframe))
 
     def _require(self):
@@ -169,6 +177,21 @@ class PocketOptionBroker(Broker):
         await self._ensure_stream(asset, timeframe)
         if self._stream_error:
             raise RuntimeError(f"Pocket Option candle feed failed — {self._stream_error}")
+
+        # A stream that opens and then simply never delivers is the failure mode
+        # that wasted days here: no exception, no error, just nothing. Measured
+        # against a deliberately invalid token, the library prints its own
+        # timeout internally and our task keeps waiting, so silence has to be
+        # turned into a diagnosis on our side.
+        if not self._closed_candles and self._stream_started:
+            waited = time.time() - self._stream_started
+            if waited > self.STALL_SECONDS:
+                raise RuntimeError(
+                    f"No price data for {asset} after {waited:.0f}s. Pocket Option "
+                    f"usually does this when the session cookie is not being "
+                    f"accepted — check the balance: if it shows 'not logged in', "
+                    f"paste a fresh cookie and do not log out afterwards."
+                )
 
         candles: List[Candle] = []
         for c in list(self._closed_candles)[-count:]:

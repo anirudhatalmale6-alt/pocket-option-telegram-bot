@@ -165,13 +165,27 @@ class Trader:
                 mode = "DEMO" if self.config.po_demo else "LIVE"
                 self._status(True, bal)
                 await self.notify(f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
-                if bal <= 0:
-                    # Worth its own line. Otherwise every trade is rejected and
-                    # the bot looks broken, when the account is simply empty.
+                if bal < 0:
+                    # Reproduced with a deliberately invalid token: the socket
+                    # opens, connect() "succeeds", and balance() then returns
+                    # -1.0 for ever while no candle ever arrives. A negative
+                    # balance is impossible on a real account, so this is the
+                    # library telling us the session was never authorised — not
+                    # an empty account, which is what this used to claim.
                     await self.notify(
-                        f"⚠️ This account has no money in it (balance {bal:.2f}). "
-                        f"Trades will be rejected until it is topped up. On a demo "
-                        f"account you can refill it from the Pocket Option website."
+                        "⚠️ Pocket Option is NOT accepting your login. The connection "
+                        "opens but nothing is authorised, so there is no balance and "
+                        "no price data.\n"
+                        "Your session cookie has expired or was cancelled — logging "
+                        "out of Pocket Option kills it. Sign in to pocketoption.com, "
+                        "grab a fresh ci_session cookie, paste it into the panel, and "
+                        "do NOT log out afterwards."
+                    )
+                elif bal == 0:
+                    await self.notify(
+                        "⚠️ This account has no money in it. Trades will be rejected "
+                        "until it is topped up. On a demo account you can refill it "
+                        "from the Pocket Option website."
                     )
                 backoff = 2
                 await self._loop()
