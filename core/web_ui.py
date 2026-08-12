@@ -25,6 +25,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import List, Optional
 
+from . import version
 from .config import BotConfig
 
 # Strategy modes offered in the dropdown, with a plain-English label so a
@@ -137,6 +138,11 @@ class WebInterface:
             "uid": c.po_uid,
             "demo": c.po_demo,
             "practice_note": self.practice_note,
+            # Updating downloads new code but a running bot keeps the old code in
+            # memory, so the page can be older than the files it came from. Say
+            # so here rather than letting a fixed bug look unfixed.
+            "version": version.RUNNING,
+            "stale_code": version.code_on_disk_is_newer(),
             # Proof of life. A selective strategy sitting out looks exactly like
             # a crashed bot, so show what it checked, when, and why it passed.
             "checks": getattr(self.trader, "checks", 0),
@@ -616,6 +622,13 @@ PAGE = r"""<!doctype html>
   #livebar{background:rgba(239,68,68,.12);border:1px solid rgba(239,68,68,.5);
            border-radius:10px;padding:12px 14px;margin:0 0 12px;
            font-size:14px;line-height:1.5;color:#fecaca}
+  /* Sits above everything, because it explains why everything else looks wrong. */
+  #stalebar{background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.6);
+            border-radius:10px;padding:13px 15px;margin:0 0 14px;
+            font-size:14.5px;line-height:1.55;color:#fde68a}
+  #stalebar b{color:#fff}
+  #stalebar code{background:rgba(0,0,0,.35);padding:1px 6px;border-radius:5px;
+                 font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:#fff}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:16px;margin-bottom:16px}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;
@@ -673,6 +686,9 @@ PAGE = r"""<!doctype html>
     <span class="pill" id="p-mode">—</span>
     <span class="pill" id="p-conn">—</span>
   </header>
+
+  <!-- Shown only when the files on disk are newer than this running process. -->
+  <div id="stalebar" style="display:none"></div>
 
   <div class="card">
     <h2>Controls</h2>
@@ -947,6 +963,20 @@ function render(s){
     lb2.style.display = 'none';
   }
 
+  // Updating the files does not update a bot that is already running. Without
+  // this, a fixed bug still looks unfixed and the page gives no clue why.
+  const sb = document.getElementById('stalebar');
+  if (s.stale_code){
+    sb.style.display = 'block';
+    sb.innerHTML = '<b>This page is running the OLD code.</b> You downloaded the ' +
+      'update, but the bot was already running and kept the old version in memory. ' +
+      'Nothing you change here will behave like the new version until you restart it.' +
+      '<br><br>In the terminal window: press <b>Ctrl+C</b>, then run ' +
+      '<code>bash run.sh --paper</code>, then press <b>Ctrl+Shift+R</b> on this page.';
+  } else {
+    sb.style.display = 'none';
+  }
+
   document.getElementById('hint').textContent = s.has_token
     ? ((s.mode === 'PRACTICE' && s.practice_note) ? s.practice_note : hints[s.mode])
     : 'No Pocket Option token loaded yet, so trading is disabled.';
@@ -988,7 +1018,10 @@ function render(s){
     cs.textContent = 'No account connected yet — the bot is on practice data. ' +
       'Paste your cookie below to trade on your own Pocket Option balance.';
   }
-  setField('f-uid', s.uid || '');
+  // Deliberately NOT prefilled from the saved account. The box says "leave
+  // blank" and the panel finds the id itself, so filling it in would be an
+  // instruction fighting itself — and the id in use is already stated in the
+  // line just above.
   setField('f-demo', s.demo);
 
   const pnl = document.getElementById('s-pnl');
