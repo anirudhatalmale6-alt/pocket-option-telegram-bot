@@ -225,6 +225,20 @@ class Trader:
             if self._pending_broker is not None:
                 return
 
+            # Keep the balance tile honest, whether or not trading is running.
+            # It used to be read once at connect and then only after a settled
+            # trade, so a bad first read stayed on screen indefinitely — exactly
+            # what happened: -1.00 shown against a real balance of 673,000. This
+            # sits ABOVE the running check on purpose; a stopped bot still shows
+            # a balance, and a stale one there is just as misleading.
+            now = time.time()
+            if now - self._balance_at > 30:
+                self._balance_at = now
+                try:
+                    self._status(True, await self.broker.balance())
+                except Exception:
+                    pass      # a failed refresh must never stop the loop
+
             if not cfg.running:
                 await asyncio.sleep(cfg.poll_interval)
                 continue
@@ -241,19 +255,6 @@ class Trader:
                 await self.notify(f"⛔ Trading paused: {reason}. Use /reset to clear or /stop.")
                 cfg.running = False
                 continue
-
-            # Keep the balance tile honest even when nothing is trading. It used
-            # to be read once at connect and then only after a settled trade, so
-            # a bad first read stayed on screen indefinitely — which is exactly
-            # what happened: -1.00 displayed for 23 minutes against a real
-            # balance of 673,000.
-            now = time.time()
-            if now - self._balance_at > 30:
-                self._balance_at = now
-                try:
-                    self._status(True, await self.broker.balance())
-                except Exception:
-                    pass      # a failed refresh must never stop trading
 
             if self._active:
                 await asyncio.sleep(cfg.poll_interval)

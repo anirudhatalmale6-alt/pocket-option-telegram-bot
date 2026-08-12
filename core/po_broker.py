@@ -46,15 +46,19 @@ except Exception:  # pragma: no cover - depends on optional install
 
 
 class PocketOptionBroker(Broker):
-    # get_candles() returns CLOSED candles only — the library's own docstring is
-    # explicit that it "does not include the current forming candle". So there is
-    # no partial bar to discard here, and discarding one would throw away the
-    # freshest close and leave every decision a full candle late.
+    # We consume only the CLOSED candles from the live stream, so there is no
+    # forming bar to discard here. Discarding one would throw away the freshest
+    # close and leave every decision a full candle late.
     LAST_CANDLE_IS_PARTIAL = False
 
     # Candle sizes Pocket Option actually serves. Asking for anything else comes
     # back empty, which looks exactly like a dead connection.
     SUPPORTED_TIMEFRAMES = (1, 5, 15, 30, 60, 300)
+
+    # How much history to backfill when the stream starts, and how many closed
+    # candles to keep. 200 covers every indicator in the project with room spare.
+    BACKFILL_HOURS = 2.0
+    MAX_ROWS = 200
 
     def __init__(self, ssid: str, demo: bool = True, uid: int = 0):
         if not ssid:
@@ -65,6 +69,11 @@ class PocketOptionBroker(Broker):
         self._ssid = normalise(ssid, uid=uid, demo=demo)
         self._demo = demo
         self._client = None
+        # One long-lived candle stream, not a new one per poll. See _ensure_stream.
+        self._stream_task = None
+        self._stream_key = None      # (asset, timeframe) the stream is serving
+        self._stream_error = ""      # last failure, surfaced instead of silence
+        self._closed_candles: List[dict] = []
 
     async def connect(self) -> None:
         if not _HAVE_LIB:
@@ -78,9 +87,60 @@ class PocketOptionBroker(Broker):
         await asyncio.sleep(2)
 
     async def close(self) -> None:
+        await self._stop_stream()
         # The underlying client manages its own socket lifecycle; nothing strictly
         # required here, but we null the reference so reuse fails loudly.
         self._client = None
+
+    async def _stop_stream(self) -> None:
+        task, self._stream_task = self._stream_task, None
+        self._stream_key = None
+        self._closed_candles = []
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    async def _pump(self, asset: str, timeframe: int) -> None:
+        """
+        Hold one live subscription open and keep the newest closed candles.
+
+        get_candles_live() is an async generator: it subscribes to ticks, backfills
+        history, then yields (closed, forming) on every update. Consuming it in a
+        background task means the trading loop reads a list from memory instead of
+        awaiting the network on every tick.
+        """
+        try:
+            gen = self._client.get_candles_live(
+                asset, timeframe, hours=self.BACKFILL_HOURS, max_rows=self.MAX_ROWS
+            )
+            async for closed, _forming in gen:
+                self._closed_candles = closed or []
+                self._stream_error = ""
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # Record it rather than dying quietly: an exception in a background
+            # task is invisible, and invisible here means the panel sits on
+            # "waiting for the first candle" forever with nothing to explain it.
+            self._stream_error = f"{type(exc).__name__}: {exc}"
+
+    async def _ensure_stream(self, asset: str, timeframe: int) -> None:
+        """Start the stream, or restart it if the asset or candle size changed."""
+        key = (asset, timeframe)
+        alive = self._stream_task is not None and not self._stream_task.done()
+        if alive and self._stream_key == key:
+            return
+        if self._stream_task is not None and self._stream_task.done():
+            # Surface why it stopped before replacing it.
+            exc = self._stream_task.exception() if not self._stream_task.cancelled() else None
+            if exc is not None and not self._stream_error:
+                self._stream_error = f"{type(exc).__name__}: {exc}"
+        await self._stop_stream()
+        self._stream_key = key
+        self._stream_task = asyncio.create_task(self._pump(asset, timeframe))
 
     def _require(self):
         if self._client is None:
@@ -88,25 +148,30 @@ class PocketOptionBroker(Broker):
         return self._client
 
     async def get_candles(self, asset: str, timeframe: int, count: int) -> List[Candle]:
-        client = self._require()
+        self._require()          # raises a readable error if not connected yet
         if timeframe not in self.SUPPORTED_TIMEFRAMES:
             raise ValueError(
                 f"Pocket Option does not serve {timeframe}s candles. Pick one of: "
                 f"{', '.join(str(t) for t in self.SUPPORTED_TIMEFRAMES)} "
                 f"(change 'Candle size' in the control panel)."
             )
-        # The library's signature reads get_candles(asset, period, offset), and
-        # its own docstring defines them as:
-        #     period = how many SECONDS OF HISTORY to fetch
-        #     offset = the CANDLE SIZE in seconds
-        # Those names invite exactly the mistake this line used to make: passing
-        # (timeframe, count * timeframe) asked for 60 seconds of history sliced
-        # into 12,000-second candles, which comes back empty every single time.
-        # The bot then sat on "waiting for the first candle to close" forever
-        # while looking perfectly healthy.
-        raw = await client.get_candles(asset, count * timeframe, timeframe)
+        # Deliberately NOT client.get_candles(). That helper opens a whole new
+        # live subscription and backfill on every single call, and the trading
+        # loop calls this once per second — so each poll tore down and rebuilt
+        # the feed, and the first batch never had time to arrive. That is why the
+        # panel sat on "waiting for the first candle to close" indefinitely.
+        #
+        # (Its docstring is also wrong about its own arguments: it documents
+        # period as the history span and offset as the candle size, while the
+        # body does `hours = offset / 3600` and passes `period` straight through
+        # to get_candles_live as the candle size. Reading the docstring rather
+        # than the body is what sent me the wrong way here once already.)
+        await self._ensure_stream(asset, timeframe)
+        if self._stream_error:
+            raise RuntimeError(f"Pocket Option candle feed failed — {self._stream_error}")
+
         candles: List[Candle] = []
-        for c in raw[-count:]:
+        for c in list(self._closed_candles)[-count:]:
             candles.append(Candle(
                 time=float(c.get("time", 0)),
                 open=float(c["open"]),
