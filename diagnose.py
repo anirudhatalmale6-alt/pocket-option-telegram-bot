@@ -26,6 +26,41 @@ def say(msg: str = "") -> None:
     print(msg, flush=True)
 
 
+def describe_session(raw: str) -> dict:
+    """
+    Pull the readable facts out of a ci_session cookie.
+
+    It is a PHP-serialised blob, URL-encoded, of the shape
+
+        a:4:{s:10:"session_id";s:32:"...";s:10:"ip_address";s:12:"1.2.3.4";
+             s:10:"user_agent";s:110:"Mozilla/...";s:13:"last_activity";i:1786414149;}
+
+    Pocket Option binds a session to the IP and browser recorded in it, so those
+    values — and how long ago it was last used — explain most refused logins
+    without any network access. Never prints the session id itself.
+    """
+    import re
+    from urllib.parse import unquote
+
+    text = unquote(raw or "")
+    out: dict = {}
+
+    for key, val in re.findall(r's:\d+:"(\w+)";s:\d+:"([^"]*)"', text):
+        if key == "session_id":
+            out["session id"] = f"present ({len(val)} chars)"   # never the value
+        elif key == "ip_address":
+            out["issued for IP"] = val
+        elif key == "user_agent":
+            out["issued for"] = (val[:60] + "…") if len(val) > 60 else val
+
+    stamp = re.search(r's:\d+:"last_activity";i:(\d+)', text)
+    if stamp:
+        when = int(stamp.group(1))
+        out["last used"] = time.strftime("%d %b %H:%M:%S", time.localtime(when))
+        out["_age_seconds"] = max(0, time.time() - when)
+    return out
+
+
 def step(n: str, msg: str) -> None:
     say(f"\n[{n}] {msg}")
 
@@ -40,6 +75,18 @@ def bad(msg: str) -> None:
 
 def info(msg: str) -> None:
     say(f"         {msg}")
+
+
+async def current_ip() -> str:
+    """This machine's public IP, or "" if it cannot be found. Never fatal."""
+    def fetch() -> str:
+        import urllib.request
+        with urllib.request.urlopen("https://api.ipify.org", timeout=8) as resp:
+            return resp.read().decode().strip()
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(fetch), 10)
+    except Exception:
+        return ""
 
 
 async def timed(label: str, coro, timeout: float):
@@ -74,6 +121,45 @@ async def main() -> int:
     if not cfg.po_uid:
         bad("PO_UID is not set — Pocket Option will refuse the connection.")
         return 1
+
+    # ------------------------------------------------- what the cookie says
+    # The ci_session blob carries the IP, browser and last-used time it was
+    # issued for. Pocket Option ties a session to those, so a mismatch explains
+    # a refused login without needing to touch the network at all.
+    step("1b", "Reading what is inside the cookie itself")
+    facts = describe_session(cfg.po_ssid)
+    if not facts:
+        info("could not read the cookie's contents (not fatal)")
+    else:
+        for key, val in facts.items():
+            if key.startswith("_"):
+                continue                      # internal, not for display
+            info(f"{key:<14}: {val}")
+
+        # Pocket Option binds a session to the IP it was created on. A home
+        # connection that has been renewed since then kills the cookie, and
+        # nothing about that is visible from the bot's side.
+        cookie_ip = facts.get("issued for IP")
+        if cookie_ip:
+            mine = await current_ip()
+            if mine:
+                info(f"{'your IP now':<14}: {mine}")
+                if mine != cookie_ip:
+                    bad(f"IP MISMATCH — the cookie was made on {cookie_ip}, you are "
+                        f"now on {mine}. Pocket Option will refuse it. Grab a fresh "
+                        f"cookie from the browser on THIS machine.")
+                else:
+                    ok("IP matches the one the cookie was issued for")
+
+        age = facts.get("_age_seconds")
+        if isinstance(age, (int, float)):
+            if age > 86400:
+                bad(f"this cookie was last used {age / 3600:.0f} hours ago — "
+                    f"almost certainly expired. Get a fresh one.")
+            elif age > 3600:
+                info(f"last used {age / 3600:.1f} hours ago — it may have expired.")
+            else:
+                ok(f"last used {age / 60:.0f} minutes ago — nice and fresh.")
 
     # ------------------------------------------------------------- connect
     step("2", "Opening the Pocket Option connection")
