@@ -72,6 +72,7 @@ async def run(paper: bool) -> None:
     config = BotConfig.from_env()
     practice = paper or not config.po_ssid
     practice_note = ""
+    token_error = ""
 
     # ---------------------------------------------------------- broker
     if paper or not config.po_ssid:
@@ -113,10 +114,25 @@ async def run(paper: bool) -> None:
             broker = PocketOptionBroker(config.po_ssid, demo=config.po_demo,
                                         uid=config.po_uid)
         except SsidError as exc:
-            # The token is the one thing nobody gets right first time, so say
-            # exactly what is wrong instead of dying inside the socket layer.
+            # Do NOT exit here. The control panel is the only way to deliver a
+            # new cookie, so quitting is a catch-22: the bot refuses to start
+            # without a good token, and a good token can only arrive through the
+            # thing that refused to start. From the outside it is worse still —
+            # nothing is listening, so the browser just says the page cannot be
+            # found, which looks like the update broke the whole program.
+            #
+            # Come up in practice mode instead, with the reason on screen and
+            # the one-click connect button reachable. Sending a fresh cookie
+            # swaps the real broker in via reconnect() below, no restart needed.
             log.error("Pocket Option token problem:\n%s", exc)
-            return
+            token_error = str(exc)
+            broker = PaperBroker(payout=config.payout_percent / 100.0)
+            practice = True
+            practice_note = ("The saved Pocket Option cookie was not usable, so this "
+                             "is PRETEND money. Send a fresh one with the one-click "
+                             "button above and it will switch to your real account.")
+            config.po_demo = True
+            _prepare_practice(config)
 
     # ------------------------------------------------ control interfaces
     web = WebInterface(config, config.web_host, config.web_port, config.web_password) \
@@ -167,6 +183,15 @@ async def run(paper: bool) -> None:
         web.paper = practice
         web.practice_note = practice_note
         web.start()
+        if token_error:
+            # Into the panel's own activity feed. It was only ever logged to the
+            # terminal, and the whole point of the launcher icon is that nobody
+            # is watching a terminal any more.
+            web.log("The saved Pocket Option cookie could not be used, so the bot "
+                    "started in practice mode.")
+            web.log(f"Reason: {token_error}")
+            web.log("Send a fresh cookie with the one-click button and it will "
+                    "switch to your account — no restart needed.")
         shown = "localhost" if config.web_host in ("0.0.0.0", "") else config.web_host
         log.info("Control panel: http://%s:%s", shown, config.web_port)
         if not config.web_password and config.web_host == "0.0.0.0":

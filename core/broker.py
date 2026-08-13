@@ -41,6 +41,16 @@ class Broker(abc.ABC):
     # Offline brokers replay already-closed candles, so they leave this False.
     LAST_CANDLE_IS_PARTIAL = False
 
+    # Is this pretend money? Declared on the base class, defaulting to the
+    # DANGEROUS answer, so a new broker has to opt in to being called practice.
+    # Getting this backwards would let a real account be described as pretend,
+    # which is the mistake that cost this project $200 of someone's money.
+    IS_PRACTICE = False
+
+    @property
+    def is_practice(self) -> bool:
+        return self.IS_PRACTICE
+
     @abc.abstractmethod
     async def connect(self) -> None: ...
 
@@ -68,6 +78,8 @@ class PaperBroker(Broker):
     `seed` makes runs reproducible. `payout` is the assumed win payout fraction
     (0.8 = 80%, typical for OTC pairs on Pocket Option).
     """
+
+    IS_PRACTICE = True
 
     def __init__(self, seed: int = 42, payout: float = 0.8, start_price: float = 1.1000):
         self._rng = random.Random(seed)

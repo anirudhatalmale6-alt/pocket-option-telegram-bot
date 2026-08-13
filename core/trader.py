@@ -162,10 +162,27 @@ class Trader:
             try:
                 await broker.connect()
                 bal = await self._settled_balance(broker)
-                mode = "DEMO" if self.config.po_demo else "LIVE"
+                # Never claim a Pocket Option connection for a practice broker.
+                # Nothing here has touched Pocket Option, and the one time this
+                # project let practice read like the real thing it cost him $200.
+                # The balance TILE already says PRETEND; the log said the
+                # opposite three lines below it.
+                practice = getattr(broker, "is_practice", False)
                 self._status(True, bal)
-                await self.notify(f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
-                if bal < 0:
+                if practice:
+                    await self.notify(
+                        f"Practice mode — no Pocket Option account is connected. "
+                        f"Pretend balance: {bal:.2f}")
+                else:
+                    mode = "DEMO" if self.config.po_demo else "LIVE"
+                    await self.notify(
+                        f"Connected to Pocket Option ({mode}). Balance: {bal:.2f}")
+
+                # The warnings below are all about a real account: a refused
+                # login, or an empty one. Neither can apply to pretend money.
+                if practice:
+                    pass
+                elif bal < 0:
                     # Reproduced with a deliberately invalid token: the socket
                     # opens, connect() "succeeds", and balance() then returns
                     # -1.0 for ever while no candle ever arrives. A negative

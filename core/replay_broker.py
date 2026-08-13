@@ -99,6 +99,8 @@ class ReplayBroker(Broker):
     out it wraps back to the start, so an overnight practice run keeps going.
     """
 
+    IS_PRACTICE = True
+
     # The replayed series contains only closed candles, so the trader has no
     # half-built bar to discard (unlike the live Pocket Option feed).
     LAST_CANDLE_IS_PARTIAL = False
