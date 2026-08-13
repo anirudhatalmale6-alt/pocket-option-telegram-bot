@@ -229,3 +229,70 @@ def test_untrusted_is_the_default():
     # lenient one — the manual paste box is where half-copies actually happen.
     with pytest.raises(SsidError):
         normalise(HALF, uid=138033625)
+
+
+# ------------------------------------------------- encoded vs decoded on the wire
+#
+# The bug that produced "Balance: -1.00" after everything else was fixed. The
+# ci_session cookie is stored percent-encoded, and .env keeps it that way on
+# purpose (envfile relies on there being no quotes or semicolons to escape). But
+# Pocket Option's trading socket wants the DECODED blob — the real auth frame in
+# DevTools is full of backslashes, which only happens because the blob contains
+# literal double quotes, and an encoded value's quotes are %22.
+#
+# discover.py built its frames from session_value() + _canonical() and never
+# decoded, so every combination it tried was refused. The socket still opens and
+# the balance sticks at -1.00, which looks exactly like an expired cookie — so
+# the symptom pointed at the client's cookie rather than at this.
+
+from urllib.parse import quote
+
+ENCODED = quote(BLOB, safe="") + "9f86d081884c7d659a2feaa0c55ad015"
+
+
+def _session_on_the_wire(frame: str) -> str:
+    return _payload(frame)["session"]
+
+
+def test_an_encoded_cookie_is_decoded_before_it_reaches_pocket_option():
+    wire = _session_on_the_wire(normalise(ENCODED, uid=138033625))
+    assert wire.startswith('a:4:{s:10:"session_id"')
+    assert "%3A" not in wire
+
+
+def test_discovery_sends_the_same_decoded_form_as_a_paste():
+    # discover.py takes this route; it was the one that skipped decoding.
+    from core.ssid import _canonical, session_value
+    theirs = _session_on_the_wire(_canonical(session_value(ENCODED), 138033625, True))
+    mine = _session_on_the_wire(normalise(ENCODED, uid=138033625))
+    assert theirs == mine
+    assert theirs.startswith('a:4:{')
+
+
+def test_the_trailing_hash_is_not_lost_in_decoding():
+    wire = _session_on_the_wire(normalise(ENCODED, uid=138033625))
+    assert wire.endswith("9f86d081884c7d659a2feaa0c55ad015")
+
+
+def test_decoding_is_idempotent():
+    # Called from several layers, so it must never matter how many times a value
+    # has been through it. A second unquote would eat any literal % in a
+    # user-agent string.
+    from core.ssid import decode_session
+    assert decode_session(decode_session(ENCODED)) == decode_session(ENCODED)
+    assert decode_session(BLOB) == BLOB
+
+
+def test_the_copy_written_to_env_stays_encoded():
+    # .env has to keep parsing. A decoded blob carries quotes and semicolons.
+    from core.ssid import _canonical
+    stored = _canonical(ENCODED, 0, True, decode=False)
+    assert "%3A" in stored
+    assert 'a:4:{s:10:"session_id"' not in stored
+
+
+def test_a_frame_restored_from_env_still_reaches_po_decoded():
+    # The restart path: encoded frame in .env -> normalise -> wire.
+    from core.ssid import _canonical
+    stored = _canonical(ENCODED, 0, True, decode=False)
+    assert _session_on_the_wire(normalise(stored)).startswith('a:4:{')

@@ -297,7 +297,10 @@ class WebInterface:
             # Option accepts this session without an account id at all. The
             # cookie-plus-uid route cannot express that, so store the finished
             # auth frame instead — it is the only form that survives a restart.
-            ssid = _canonical(session, 0, demo) if uid == 0 else ""
+            # decode=False: this string goes into .env, which stays parseable
+            # only while the blob is percent-encoded. It is decoded again on the
+            # way to Pocket Option, inside _canonical.
+            ssid = _canonical(session, 0, demo, decode=False) if uid == 0 else ""
             update({"PO_SESSION": session, "PO_UID": str(uid),
                     "PO_DEMO": "true" if demo else "false",
                     "PO_SSID": ssid})

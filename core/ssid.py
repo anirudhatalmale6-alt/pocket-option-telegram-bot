@@ -139,10 +139,45 @@ def clean_session_input(raw: str) -> str:
     return value
 
 
-def _canonical(session: str, uid: int, demo: bool) -> str:
-    """Build the exact auth frame the trading socket expects."""
+def decode_session(value: str) -> str:
+    """
+    Return the session blob in the form Pocket Option's trading socket wants.
+
+    The ci_session COOKIE is stored percent-encoded — `a%3A4%3A%7B...` — because
+    that is how browsers keep it, and it is the form the panel writes to .env
+    (envfile relies on it: no quotes, no semicolons, nothing to escape).
+
+    The trading socket wants the DECODED blob. The proof is the real auth frame
+    in DevTools, which reads
+        42["auth",{"session":"a:4:{s:10:\\"session_id\\";...
+    Those backslashes only exist because the blob contains literal double
+    quotes, and a percent-encoded value has none — its quotes are %22.
+
+    Sending the encoded form is refused in complete silence: the socket opens,
+    the balance sticks at -1.00 and no price data ever arrives, which is
+    indistinguishable from an expired cookie. That is exactly what happened.
+
+    Idempotent on purpose. An already-decoded blob starts with 'a:N:{' and is
+    returned untouched, so it is safe to call anywhere without tracking how many
+    times a value has been through it.
+    """
+    text = (value or "").strip()
+    if _PHP_SESSION_RE.match(text):
+        return text
+    candidate = unquote(text)
+    return candidate if _PHP_SESSION_RE.match(candidate) else text
+
+
+def _canonical(session: str, uid: int, demo: bool, decode: bool = True) -> str:
+    """
+    Build the exact auth frame the trading socket expects.
+
+    `decode=False` is for the copy written to .env, which must stay
+    percent-encoded so the file keeps parsing. Everything that actually reaches
+    Pocket Option leaves this with decode=True.
+    """
     payload = {
-        "session": session,
+        "session": decode_session(session) if decode else session,
         "isDemo": 1 if demo else 0,
         "uid": uid,
         "platform": 2,

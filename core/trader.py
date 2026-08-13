@@ -172,14 +172,23 @@ class Trader:
                     # balance is impossible on a real account, so this is the
                     # library telling us the session was never authorised — not
                     # an empty account, which is what this used to claim.
+                    # Say what is KNOWN, then the causes in order of likelihood.
+                    # This used to assert flatly that the cookie had expired,
+                    # and the one time it mattered that was wrong — the cookie
+                    # was fine and the bot was sending it in the wrong format.
+                    # An error message that names the wrong culprit sends
+                    # someone off fetching a new cookie for a fault no cookie
+                    # can fix, and it does it in my voice.
                     await self.notify(
                         "⚠️ Pocket Option is NOT accepting your login. The connection "
                         "opens but nothing is authorised, so there is no balance and "
                         "no price data.\n"
-                        "Your session cookie has expired or was cancelled — logging "
-                        "out of Pocket Option kills it. Sign in to pocketoption.com, "
-                        "grab a fresh ci_session cookie, paste it into the panel, and "
-                        "do NOT log out afterwards."
+                        "The usual cause is an expired session cookie — logging out of "
+                        "Pocket Option kills it. Sign in to pocketoption.com, send a "
+                        "fresh cookie with the one-click button, and do NOT log out "
+                        "afterwards.\n"
+                        "If you only just sent a fresh one, it is not expiry. Tell me "
+                        "and I will look at it from my end."
                     )
                 elif bal == 0:
                     await self.notify(
