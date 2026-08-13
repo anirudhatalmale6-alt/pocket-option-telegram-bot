@@ -1118,11 +1118,15 @@ function render(s){
   const sb = document.getElementById('stalebar');
   if (s.stale_code){
     sb.style.display = 'block';
+    // These instructions were written before start.sh and the launcher icon
+    // existed, and still said "press Ctrl+C in the terminal window". Telling
+    // someone to do something that no longer applies, in the one banner that
+    // appears when they are already stuck, is worse than saying nothing.
     sb.innerHTML = '<b>This page is running the OLD code.</b> You downloaded the ' +
       'update, but the bot was already running and kept the old version in memory. ' +
       'Nothing you change here will behave like the new version until you restart it.' +
-      '<br><br>In the terminal window: press <b>Ctrl+C</b>, then run ' +
-      '<code>bash run.sh --paper</code>, then press <b>Ctrl+Shift+R</b> on this page.';
+      '<br><br>Run this one line in the terminal, then press <b>Ctrl+Shift+R</b> here:' +
+      '<br><code>cd ~/pocket-option-telegram-bot &amp;&amp; bash stop.sh &amp;&amp; bash open_panel.sh</code>';
   } else {
     sb.style.display = 'none';
   }

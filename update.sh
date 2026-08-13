@@ -49,6 +49,16 @@ fi
 # completely wrong conclusion.
 PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
 PORT=${PORT:-8080}
+RESTARTED=no
+
+# Come back up in the same mode it was in. Silently promoting a practice run to
+# a real-money one during an update would be unforgivable, so --paper is the
+# default and only a saved session removes it.
+START_ARGS=--paper
+if grep -qE '^PO_(SESSION|SSID)=.+' .env 2>/dev/null; then
+    START_ARGS=
+fi
+
 if command -v python3 >/dev/null 2>&1 && ! python3 - "$PORT" <<'PYEOF' 2>/dev/null
 import socket, sys
 s = socket.socket()
@@ -60,14 +70,19 @@ finally:
     s.close()
 PYEOF
 then
+    # Do it, don't ask. Downloading an update never changes a program already
+    # running, and every time that has been left to a follow-up instruction it
+    # has cost a round trip: the fix is downloaded, the old code is still what
+    # answers, and the bug looks unfixed. There is nothing to decide here.
     echo
-    echo "${YELLOW}${BOLD}! The bot is still running, using the OLD code.${RESET}"
-    echo "  Downloading an update does not change a program that is already going."
-    echo
-    echo "  Restart it so the new code is the code that runs:"
-    echo "      ${BOLD}bash stop.sh && bash open_panel.sh${RESET}"
-    echo
-    echo "  Refreshing the web page alone will NOT pick this up."
+    echo "${BOLD}==>${RESET} The bot is running the old code — restarting it..."
+    if bash stop.sh >/dev/null 2>&1 && bash start.sh ${START_ARGS} >/dev/null 2>&1; then
+        echo "${GREEN}  ok${RESET} restarted, now running ${AFTER}"
+        RESTARTED=yes
+    else
+        echo "${YELLOW}  ! could not restart it automatically.${RESET}"
+        echo "    Run this yourself:  ${BOLD}bash stop.sh && bash open_panel.sh${RESET}"
+    fi
 fi
 
 # Keep the launcher icon in step with the code, silently. Asking someone to run
@@ -77,6 +92,19 @@ if [ -f install_launcher.sh ]; then
     bash install_launcher.sh >/dev/null 2>&1 || true
 fi
 
+if [ "$RESTARTED" = yes ]; then
+cat <<EOF
+
+${GREEN}${BOLD}Done — and the bot is already running the new code.${RESET}
+
+Just go to your control panel tab and press ${BOLD}Ctrl+Shift+R${RESET}.
+
+    http://localhost:${PORT}
+
+That last step matters: your browser keeps a copy of the page, so without a
+hard refresh you can be looking at the old one and think nothing changed.
+EOF
+else
 cat <<EOF
 
 ${GREEN}${BOLD}Done.${RESET} Now do this one thing:
@@ -94,6 +122,7 @@ One thing that catches people out: your browser caches the control panel, so
 after an update press ${BOLD}Ctrl+Shift+R${RESET} on the page to force a fresh copy.
 Without that you can be looking at the old panel and think nothing changed.
 EOF
+fi
 
 }
 
