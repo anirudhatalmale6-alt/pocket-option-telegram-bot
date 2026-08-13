@@ -95,3 +95,40 @@ def test_looks_like_chart_token():
     assert looks_like_chart_token("eb29431e026b200e4be64d4061a2901d")
     assert not looks_like_chart_token(TRADING_LINE)
     assert not looks_like_chart_token("")
+
+
+# --------------------------------------------------------------- truncation
+#
+# Reported as "it says not logged in": the cookie was the right shape but
+# Pocket Option refused it, and nothing on screen could say why. A half-copied
+# cookie still begins with 'a:4:{', so every check above this one passes it.
+
+HALF = BLOB[:len(BLOB) // 2]
+
+
+def test_a_half_copied_cookie_is_rejected_with_a_copying_instruction():
+    with pytest.raises(SsidError) as err:
+        normalise(HALF, uid=138033625)
+    assert "cut off" in str(err.value)
+    # It must say how to copy it properly, not just that it failed.
+    assert "Copy value" in str(err.value)
+
+
+def test_truncation_is_caught_inside_a_pasted_auth_frame_too():
+    frame = ('42["auth",{"session":"%s","isDemo":1,"uid":138033625,"platform":2}]'
+             % HALF.replace('"', '\\"'))
+    with pytest.raises(SsidError) as err:
+        normalise(frame)
+    assert "cut off" in str(err.value)
+
+
+def test_truncation_is_detected_through_url_encoding():
+    from urllib.parse import quote
+    with pytest.raises(SsidError):
+        normalise(quote(HALF), uid=138033625)
+
+
+def test_a_whole_cookie_is_still_accepted():
+    # The control: same code path, complete value, must pass. Without this the
+    # test above would also pass if normalise() had started rejecting everything.
+    assert normalise(BLOB, uid=138033625).startswith('42["auth",')

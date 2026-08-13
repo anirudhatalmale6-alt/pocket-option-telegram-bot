@@ -336,11 +336,18 @@ class WebInterface:
                 # Every combination refused means the cookie is dead — a wrong
                 # account id would have been fixed by one of the four attempts.
                 # Say that plainly instead of leaving a silent 'Connecting…'.
-                self.log("⚠️ Pocket Option refused every combination. That means "
-                         "the cookie itself has expired, not that the account id "
-                         "is wrong. Log in to pocketoption.com, copy a FRESH "
-                         "ci_session cookie, paste it here — and do not log out "
-                         "afterwards, because logging out kills it.")
+                # The length is safe to print and worth printing: a complete
+                # ci_session is several hundred characters, so a suspiciously
+                # short one that still passed the shape check narrows this from
+                # "expired" to "half of it got copied". Never the value itself —
+                # this feed is on screen and in the log file.
+                self.log(f"⚠️ Pocket Option refused every combination "
+                         f"(the cookie it tried was {len(session)} characters). "
+                         "That means the cookie itself is no longer valid, not "
+                         "that the account id is wrong. Log in to "
+                         "pocketoption.com, copy a FRESH ci_session cookie, "
+                         "paste it here — and do not log out afterwards, "
+                         "because logging out kills it.")
                 return
 
             if found.balance > 0:

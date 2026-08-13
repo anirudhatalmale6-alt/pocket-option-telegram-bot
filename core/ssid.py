@@ -66,6 +66,32 @@ def _has_session_shape(value: str) -> bool:
     return bool(_PHP_SESSION_RE.match(unquote(value or "")))
 
 
+def _looks_truncated(value: str) -> bool:
+    """
+    True if a PHP session blob has been cut off partway through.
+
+    Chrome shows the cookie in a single-line cell in Application -> Cookies. A
+    double-click there selects a *word*, not the whole value, so copying half a
+    cookie is easy — and half a cookie still starts with 'a:4:{', so every shape
+    check above it passes. Pocket Option then refuses it, and the only symptom is
+    the balance tile reading "not logged in" with nothing to say why.
+
+    A complete blob always ends with the '}' that closes the a:N:{ it opened
+    with. That is cheap to check and cannot be faked by a partial copy.
+    """
+    return not unquote(value or "").strip().endswith("}")
+
+
+_TRUNCATED_HELP = (
+    "That cookie is cut off — it starts correctly but the end is missing, so "
+    "only part of it was copied.\n"
+    "In DevTools -> Application -> Cookies, do not double-click the value "
+    "(that selects one word). Right-click the ci_session row and choose "
+    "'Copy value', or click once in the value cell and press Ctrl+A then Ctrl+C.\n"
+    "A whole one is several hundred characters long and finishes with a '}'."
+)
+
+
 def _canonical(session: str, uid: int, demo: bool) -> str:
     """Build the exact auth frame the trading socket expects."""
     payload = {
@@ -132,6 +158,8 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
             # from the session alone. Trust it. Anything else with a missing uid is
             # a human copying the wrong line, and still gets told so.
             raise SsidError("The auth line has no uid — set PO_UID to your account id.")
+        if _has_session_shape(str(session)) and _looks_truncated(str(session)):
+            raise SsidError(_TRUNCATED_HELP)
         demo_val = bool(obj.get("isDemo", 1 if demo else 0))
         return _canonical(str(session), uid_val, demo_val)
 
@@ -146,6 +174,8 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
             "socket, or the ci_session cookie value (it starts with 'a:4:{').\n"
             + _CHART_HELP
         )
+    if _looks_truncated(candidate):
+        raise SsidError(_TRUNCATED_HELP)
     if not uid:
         raise SsidError(
             "Got the session blob but no account id — also set PO_UID "
