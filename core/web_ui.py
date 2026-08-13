@@ -236,6 +236,11 @@ class WebInterface:
         session = clean_session_input(str(body.get("session", "")))
         raw_uid = str(body.get("uid", "")).strip()
         demo = bool(body.get("demo", True))
+        # The bookmarklet reads document.cookie in one piece, so a half-copy
+        # cannot happen on that route and the truncation guard must not fire.
+        # It once refused a perfectly good 427-character cookie and left the
+        # bot with no way in at all.
+        trusted = str(body.get("via", "")) == "bookmarklet"
 
         if not session:
             return {"ok": False, "message": "Paste the ci_session cookie first."}
@@ -253,7 +258,7 @@ class WebInterface:
         # real id is discovered below.
         from .ssid import SsidError, normalise
         try:
-            normalise(session, uid=uid or 1, demo=demo)
+            normalise(session, uid=uid or 1, demo=demo, trusted=trusted)
         except SsidError as exc:
             # Also into the log feed, which scrolls and stays. A pop-up is the
             # wrong home for several lines of instructions — it was reported as
@@ -1362,7 +1367,8 @@ async function go(){
       method:'POST', headers:h,
       // No account id on purpose — the panel tries every combination and keeps
       // whichever one Pocket Option answers on.
-      body: JSON.stringify({action:'connect', session:session, uid:'', demo:true})
+      body: JSON.stringify({action:'connect', session:session, uid:'', demo:true,
+                            via:'bookmarklet'})
     });
     if (r.status === 401){
       say('The panel wants its password',

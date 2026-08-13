@@ -66,6 +66,12 @@ def _has_session_shape(value: str) -> bool:
     return bool(_PHP_SESSION_RE.match(unquote(value or "")))
 
 
+# CodeIgniter — which is what Pocket Option's site runs — can append a keyed
+# hash of the session data *after* the closing brace. A complete cookie then
+# does not end with '}' at all, it ends with 32-plus hex characters.
+_HASH_SUFFIX_RE = re.compile(r'^[0-9a-f]{32,128}$', re.I)
+
+
 def _looks_truncated(value: str) -> bool:
     """
     True if a PHP session blob has been cut off partway through.
@@ -76,19 +82,30 @@ def _looks_truncated(value: str) -> bool:
     check above it passes. Pocket Option then refuses it, and the only symptom is
     the balance tile reading "not logged in" with nothing to say why.
 
-    A complete blob always ends with the '}' that closes the a:N:{ it opened
-    with. That is cheap to check and cannot be faked by a partial copy.
+    The obvious test — "does it end with the '}' that closes the a:N:{" — is
+    WRONG on its own, and wrongly refused a real 427-character cookie that had
+    nothing at all the matter with it. CodeIgniter appends a hash of the session
+    data after that brace, so a complete cookie legitimately ends in hex. Accept
+    that shape too: brace-then-hash is finished, brace-then-nothing is finished,
+    and only a value with no closing brace in it is genuinely half a cookie.
     """
-    return not unquote(value or "").strip().endswith("}")
+    text = unquote(value or "").strip()
+    if not text:
+        return True
+    if text.endswith("}"):
+        return False
+    close = text.rfind("}")
+    return not (close != -1 and _HASH_SUFFIX_RE.match(text[close + 1:]))
 
 
 _TRUNCATED_HELP = (
-    "That cookie is cut off — it starts correctly but the end is missing, so "
+    "That cookie looks cut off — it starts correctly but the end is missing, so "
     "only part of it was copied.\n"
-    "In DevTools -> Application -> Cookies, do not double-click the value "
-    "(that selects one word). Right-click the ci_session row and choose "
-    "'Copy value', or click once in the value cell and press Ctrl+A then Ctrl+C.\n"
-    "A whole one is several hundred characters long and finishes with a '}'."
+    "Do not copy it by hand. In the control panel, use the ONE-CLICK CONNECT box "
+    "at the top: drag the blue 'Send PO cookie to bot' button onto Chrome's "
+    "bookmarks bar (Ctrl+Shift+B shows the bar), open pocketoption.com, log in, "
+    "and click that bookmark. It reads the cookie itself, so it cannot copy only "
+    "half of it."
 )
 
 
@@ -148,7 +165,7 @@ def _extract_json(raw: str) -> Optional[dict]:
     return obj if isinstance(obj, dict) else None
 
 
-def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
+def normalise(raw: str, uid: int = 0, demo: bool = True, trusted: bool = False) -> str:
     """
     Return a valid `42["auth",{...}]` string, or raise SsidError explaining why not.
 
@@ -158,6 +175,13 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
       * just the session blob / ci_session cookie value (then `uid` is required).
 
     `uid` and `demo` are only used when the input does not already carry them.
+
+    `trusted` says the value was read out of `document.cookie` by the one-click
+    bookmarklet rather than copied by a human. A half-copy is then impossible by
+    construction, so the truncation guard — which exists purely to catch a bad
+    manual copy — is skipped. It is a guess about someone's clipboard, and a
+    guess must never be what stands between a good cookie and Pocket Option;
+    where the value came from as one piece, let Pocket Option be the judge.
     """
     if raw is None:
         raise SsidError("No Pocket Option token supplied — set PO_SSID in your .env.")
@@ -188,7 +212,8 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
             # from the session alone. Trust it. Anything else with a missing uid is
             # a human copying the wrong line, and still gets told so.
             raise SsidError("The auth line has no uid — set PO_UID to your account id.")
-        if _has_session_shape(str(session)) and _looks_truncated(str(session)):
+        if (not trusted and _has_session_shape(str(session))
+                and _looks_truncated(str(session))):
             raise SsidError(_TRUNCATED_HELP)
         demo_val = bool(obj.get("isDemo", 1 if demo else 0))
         return _canonical(str(session), uid_val, demo_val)
@@ -204,7 +229,7 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
             "socket, or the ci_session cookie value (it starts with 'a:4:{').\n"
             + _CHART_HELP
         )
-    if _looks_truncated(candidate):
+    if not trusted and _looks_truncated(candidate):
         raise SsidError(_TRUNCATED_HELP)
     if not uid:
         raise SsidError(

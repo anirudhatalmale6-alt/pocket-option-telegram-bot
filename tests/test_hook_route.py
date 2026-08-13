@@ -141,3 +141,47 @@ def test_a_cookie_arriving_this_way_is_accepted_the_same_as_a_pasted_one(server)
     res = server.command({"action": "connect", "session": round_tripped,
                           "uid": "", "demo": True})
     assert res["ok"] is True
+
+
+# ------------------------------------------------- the 427-character refusal
+#
+# What actually happened: the bookmarklet worked perfectly, handed over a whole
+# 427-character cookie, and the panel refused it as "cut off". The cookie was
+# fine — the truncation check was wrong. These lock the fix in place, because
+# the failure was invisible from the outside: everything looked like the client
+# had mis-copied something again, and he had not.
+
+def test_the_hook_page_declares_where_the_cookie_came_from(server):
+    # This flag is what tells the connect handler no human clipboard was
+    # involved. Lose it and the 427-character refusal comes straight back.
+    _, body = _get(server, "/hook")
+    assert "via:'bookmarklet'" in body.replace(" ", "").replace("\n", "")
+
+
+def test_a_bookmarklet_cookie_is_never_refused_as_truncated(server):
+    # A value the truncation guard hates, arriving by the one route on which a
+    # half-copy is impossible. It must get as far as Pocket Option.
+    half = "a%3A4%3A%7Bs%3A10%3A%22session_id%22%3Bs%3A32%3A%22bc01274a2716"
+    res = server.command({"action": "connect", "session": half,
+                          "uid": "", "demo": True, "via": "bookmarklet"})
+    assert res["ok"] is True, res.get("message")
+
+
+def test_the_same_value_pasted_by_hand_is_still_refused(server):
+    # The control: without the flag the guard still does its job, so the manual
+    # box keeps catching the half-copies that really do happen there.
+    half = "a%3A4%3A%7Bs%3A10%3A%22session_id%22%3Bs%3A32%3A%22bc01274a2716"
+    res = server.command({"action": "connect", "session": half,
+                          "uid": "", "demo": True})
+    assert res["ok"] is False
+    assert "cut off" in res["message"]
+
+
+def test_a_real_shaped_cookie_with_a_trailing_hash_is_accepted(server):
+    # The actual shape behind the bug: CodeIgniter's hash after the brace.
+    cookie = ("a%3A4%3A%7Bs%3A10%3A%22session_id%22%3Bs%3A32%3A%22"
+              "bc01274a27165376b8124c84bd7ec930%22%3B%7D"
+              "9f86d081884c7d659a2feaa0c55ad015")
+    res = server.command({"action": "connect", "session": cookie,
+                          "uid": "", "demo": True})
+    assert res["ok"] is True, res.get("message")

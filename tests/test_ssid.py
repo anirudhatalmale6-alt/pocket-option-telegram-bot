@@ -110,8 +110,9 @@ def test_a_half_copied_cookie_is_rejected_with_a_copying_instruction():
     with pytest.raises(SsidError) as err:
         normalise(HALF, uid=138033625)
     assert "cut off" in str(err.value)
-    # It must say how to copy it properly, not just that it failed.
-    assert "Copy value" in str(err.value)
+    # It must say how to get a whole one, not just that it failed — and the
+    # answer is no longer "copy it more carefully", it is "stop copying it".
+    assert "one-click" in str(err.value).lower()
 
 
 def test_truncation_is_caught_inside_a_pasted_auth_frame_too():
@@ -163,3 +164,68 @@ def test_a_truncated_cookie_header_is_still_caught():
     with pytest.raises(SsidError) as err:
         normalise(header, uid=138033625)
     assert "cut off" in str(err.value)
+
+
+# ------------------------------------------------------ the trailing hash bug
+#
+# A real 427-character cookie, read out of document.cookie by the bookmarklet
+# and therefore complete by construction, was refused as "cut off". The reason
+# was this module, not the cookie: CodeIgniter — which Pocket Option's site runs
+# — appends a keyed hash of the session data after the closing brace, so a whole
+# cookie need not end with '}' at all. Refusing it left the bot no way in.
+
+HASH = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+BLOB_WITH_HASH = BLOB + HASH
+
+
+def test_a_cookie_with_a_trailing_hash_is_not_called_truncated():
+    assert normalise(BLOB_WITH_HASH, uid=138033625).startswith('42["auth",')
+
+
+def test_the_trailing_hash_survives_url_encoding():
+    from urllib.parse import quote
+    out = normalise(quote(BLOB_WITH_HASH), uid=138033625)
+    assert _payload(out)["session"].endswith(HASH)
+
+
+def test_the_hash_is_kept_not_stripped():
+    # Trimming it to make the shape check happy would hand Pocket Option a
+    # cookie it has never issued. The value must go out exactly as it came in.
+    assert _payload(normalise(BLOB_WITH_HASH, uid=138033625))["session"] == BLOB_WITH_HASH
+
+
+def test_rubbish_after_the_brace_is_still_truncation():
+    # The control. Only a hex hash counts as a legitimate tail; half a blob that
+    # happens to contain a brace must not sneak through on this exemption.
+    with pytest.raises(SsidError):
+        normalise(BLOB[:60] + "}s:10:\"ip_addre", uid=138033625)
+
+
+# ------------------------------------------------------------ trusted sources
+#
+# The truncation check is a guess about someone's clipboard. When the value was
+# read by code rather than copied by hand there is no clipboard to guess about,
+# and the guess must not be what stands between a good cookie and Pocket Option.
+
+def test_a_trusted_value_skips_the_truncation_guard():
+    assert normalise(HALF, uid=138033625, trusted=True).startswith('42["auth",')
+
+
+def test_trusted_does_not_disable_the_chart_token_check():
+    # Coming from the bookmarklet says nothing about *which* token it is, so the
+    # checks that are still meaningful have to keep working.
+    with pytest.raises(SsidError) as err:
+        normalise(CHART_LINE, trusted=True)
+    assert "CHART" in str(err.value)
+
+
+def test_trusted_still_refuses_something_that_is_not_a_session():
+    with pytest.raises(SsidError):
+        normalise("hello world", uid=138033625, trusted=True)
+
+
+def test_untrusted_is_the_default():
+    # A caller that forgets the argument must get the strict behaviour, not the
+    # lenient one — the manual paste box is where half-copies actually happen.
+    with pytest.raises(SsidError):
+        normalise(HALF, uid=138033625)
