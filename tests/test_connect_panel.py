@@ -234,3 +234,43 @@ def test_practice_can_still_press_start_after_a_rejected_cookie(panel):
     panel.paper = True
     panel.token_error = "no good"
     assert panel.state()["has_token"] is True
+
+
+# ------------------------------------------- demo is a requirement, not a preference
+class _Found:
+    """Stands in for discover.Account without importing the network module."""
+    def __init__(self, uid, demo, balance, matches_request=True):
+        self.uid, self.demo, self.balance = uid, demo, balance
+        self.matches_request = matches_request
+
+    @property
+    def label(self):
+        return ("practice" if self.demo else "real money") + f" (account id {self.uid})"
+
+
+def test_a_real_money_account_is_never_saved_when_demo_was_asked_for(panel):
+    """
+    The worst thing this program can do on its own.
+
+    The account search used to try all four (uid, isDemo) combinations in one
+    list and keep the first FUNDED one — so an empty demo lost to a live
+    account with money in it, and the panel silently saved LIVE and flipped its
+    own mode tag. Ask for practice, get connected to real money, with no
+    decision from anybody.
+    """
+    panel.config.po_ssid = ""
+    panel._apply_discovery(_Found(555, demo=False, balance=1234.0,
+                                  matches_request=False), GOOD, demo=True)
+
+    assert panel.config.po_ssid == ""          # nothing saved
+    assert panel.config.po_demo is not False    # never flipped to live
+    assert not os.path.exists(panel.env_path)   # and nothing written to disk
+    said = " ".join(e["text"] for e in panel.state()["log"])
+    assert "NOT" in said and "real money" in said
+
+
+def test_the_matching_account_is_still_saved_normally(panel):
+    # The guard must not break the ordinary path.
+    panel._apply_discovery(_Found(555, demo=True, balance=50.0), GOOD, demo=True)
+    assert panel.config.po_uid == 555
+    assert panel.config.po_demo is True

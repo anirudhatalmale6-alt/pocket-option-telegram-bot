@@ -358,37 +358,64 @@ class WebInterface:
             except Exception as exc:
                 self.log(f"Could not check the account: {type(exc).__name__}: {exc}")
                 found = None
-
-            if found is None:
-                # Every combination refused means the cookie is dead — a wrong
-                # account id would have been fixed by one of the four attempts.
-                # Say that plainly instead of leaving a silent 'Connecting…'.
-                # The length is safe to print and worth printing: a complete
-                # ci_session is several hundred characters, so a suspiciously
-                # short one that still passed the shape check narrows this from
-                # "expired" to "half of it got copied". Never the value itself —
-                # this feed is on screen and in the log file.
-                self.log(f"⚠️ Pocket Option refused every combination "
-                         f"(the cookie it tried was {len(session)} characters). "
-                         "That means the cookie itself is no longer valid, not "
-                         "that the account id is wrong. Log in to "
-                         "pocketoption.com, copy a FRESH ci_session cookie, "
-                         "paste it here — and do not log out afterwards, "
-                         "because logging out kills it.")
-                return
-
-            if found.balance > 0:
-                self.log(f"✓ Found it — your {found.label}, "
-                         f"balance {found.balance:,.2f}.")
-            else:
-                self.log(f"✓ Pocket Option accepted your {found.label}, but there "
-                         f"is no money in it.")
-            res = self._save_account(session, found.uid, found.demo)
-            if not res.get("ok"):
-                self.log(res.get("message", "Could not save the account details."))
+            self._apply_discovery(found, session, demo)
 
         threading.Thread(target=work, daemon=True,
                          name="po-account-discovery").start()
+
+    def _apply_discovery(self, found, session: str, demo: bool) -> None:
+        """
+        Decide what to do with what the search came back with.
+
+        Split out from the thread above so it can be tested directly. What this
+        decides is which account a self-trading bot gets pointed at, so it must
+        not be reachable only through a background thread and a live socket.
+        """
+        if found is None:
+            # Every combination refused means the cookie is dead — a wrong
+            # account id would have been fixed by one of the four attempts.
+            # Say that plainly instead of leaving a silent 'Connecting…'.
+            # The length is safe to print and worth printing: a complete
+            # ci_session is several hundred characters, so a suspiciously
+            # short one that still passed the shape check narrows this from
+            # "expired" to "half of it got copied". Never the value itself —
+            # this feed is on screen and in the log file.
+            self.log(f"⚠️ Pocket Option refused every combination "
+                     f"(the cookie it tried was {len(session)} characters). "
+                     "That means the cookie itself is no longer valid, not "
+                     "that the account id is wrong. Log in to "
+                     "pocketoption.com, copy a FRESH ci_session cookie, "
+                     "paste it here — and do not log out afterwards, "
+                     "because logging out kills it.")
+            return
+
+        if not found.matches_request:
+            # The other kind of account answered — and it is NOT the one
+            # that was asked for. Saving it would connect the bot to real
+            # money because the demo happened to be unreachable, which is
+            # the single worst thing this program can do on its own. Report
+            # it and stop; switching to real money is a decision a person
+            # makes, deliberately, with the tick box.
+            asked = "practice" if demo else "real money"
+            self.log(f"⚠️ Your {found.label} answers, but your {asked} account "
+                     f"does not. Nothing has been saved and the bot is NOT "
+                     f"connected to it.")
+            if demo:
+                self.log("Open pocketoption.com and switch to the demo balance "
+                         "there (top right), then click the bookmark again — "
+                         "that usually wakes the demo account up. I have "
+                         "deliberately not connected you to real money.")
+            return
+
+        if found.balance > 0:
+            self.log(f"✓ Found it — your {found.label}, "
+                     f"balance {found.balance:,.2f}.")
+        else:
+            self.log(f"✓ Pocket Option accepted your {found.label}, but there "
+                     f"is no money in it.")
+        res = self._save_account(session, found.uid, found.demo)
+        if not res.get("ok"):
+            self.log(res.get("message", "Could not save the account details."))
 
     # ------------------------------------------------------------ commands
     def command(self, body: dict) -> dict:
@@ -838,8 +865,9 @@ PAGE = r"""<!doctype html>
       <div>
         <label>Which balance</label>
         <div class="row"><input type="checkbox" id="f-demo" checked><label for="f-demo">Demo — practice money (recommended)</label></div>
-        <div class="sub">A preference, not a requirement — it is tried first, and
-          the other one is tried if it is refused.</div>
+        <div class="sub">Not a preference — a requirement. If your demo cannot be
+          reached, the bot stops and says so; it will never connect you to real
+          money because the demo did not answer.</div>
       </div>
     </div>
     <div class="btns" style="margin-top:14px">

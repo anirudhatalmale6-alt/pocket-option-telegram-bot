@@ -44,6 +44,9 @@ class Account:
     uid: int
     demo: bool
     balance: float
+    # False when this is NOT the kind of account that was asked for — found by
+    # the diagnostic sweep below, and never safe to save without being asked.
+    matches_request: bool = True
 
     @property
     def label(self) -> str:
@@ -52,22 +55,15 @@ class Account:
         return f"{which} ({who})"
 
 
-def _candidates(uid_hint: int, demo_hint: bool) -> List[Tuple[int, bool]]:
+def _uids(uid_hint: int) -> List[int]:
     """
-    The combinations worth trying, best guess first.
+    The account ids worth trying, best guess first.
 
-    Ordered so the common case — the details already saved are simply correct —
-    costs one attempt, while a wrong uid still gets found without asking anyone
-    to open DevTools. uid 0 is included because Pocket Option may derive the
-    account from the session alone; if it does, that combination works and the
-    uid never mattered.
+    uid 0 is included because Pocket Option may derive the account from the
+    session alone; if it does, that combination works and the uid never
+    mattered.
     """
-    out: List[Tuple[int, bool]] = []
-    for uid in ([uid_hint] if uid_hint else []) + [0]:
-        for demo in (demo_hint, not demo_hint):
-            if (uid, demo) not in out:
-                out.append((uid, demo))
-    return out
+    return ([uid_hint] if uid_hint else []) + [0]
 
 
 async def _try_one(session: str, uid: int, demo: bool) -> Optional[float]:
@@ -105,29 +101,12 @@ async def _try_one(session: str, uid: int, demo: bool) -> Optional[float]:
             pass
 
 
-async def find_account(session: str, uid_hint: int = 0, demo_hint: bool = True,
-                       log: Optional[Callable[[str], None]] = None
-                       ) -> Optional[Account]:
-    """
-    Find a combination Pocket Option accepts for this session cookie.
-
-    Returns the first funded account found, falling back to an accepted-but-empty
-    one if that is all there is. Returns None when every combination is refused —
-    which means the cookie itself is dead, not that the account id is wrong.
-
-    `log` receives one line per attempt so the control panel can show progress;
-    an unattended run without it behaves identically.
-    """
-    def say(msg: str) -> None:
-        if log:
-            log(msg)
-
-    # Accept either form of input: the saved PO_SSID may already be a whole auth
-    # frame, and rebuilding a frame around a frame would refuse everything.
-    session = session_value(session)
+async def _search(session: str, uids: List[int], demo: bool,
+                  say: Callable[[str], None]) -> Optional[Account]:
+    """Try every uid for ONE kind of account. First accepted wins."""
     empty: Optional[Account] = None
 
-    for uid, demo in _candidates(uid_hint, demo_hint):
+    for uid in uids:
         found = Account(uid, demo, 0.0)
         say(f"Trying your {found.label}…")
         bal = await _try_one(session, uid, demo)
@@ -139,10 +118,65 @@ async def find_account(session: str, uid_hint: int = 0, demo_hint: bool = True,
             found.balance = bal
             say(f"  accepted — balance {bal:,.2f}")
             return found
-        # Accepted, but nothing in it. Keep looking for a funded one; if every
-        # other combination is refused outright, this is still the right answer.
+        # Accepted, but nothing in it. Keep looking for a funded one under the
+        # same kind; if every other uid is refused, this is still the answer.
         say("  accepted, but the balance is zero")
         if empty is None:
             empty = found
 
     return empty
+
+
+async def find_account(session: str, uid_hint: int = 0, demo_hint: bool = True,
+                       log: Optional[Callable[[str], None]] = None
+                       ) -> Optional[Account]:
+    """
+    Find which account this session cookie opens, for the kind that was ASKED
+    FOR — demo or real — and never the other one by accident.
+
+    The kind is not a preference to be optimised away. This used to try all four
+    (uid, isDemo) combinations in one flat list and keep the first FUNDED one,
+    which meant a demo balance of zero lost to a real-money balance that had
+    money in it: ask for practice, get handed a live account, silently, because
+    the live one looked like the better answer. On a bot that places trades by
+    itself that is not a wrong guess, it is someone's actual money. This project
+    has already cost the client $200 to exactly that class of mistake.
+
+    So the requested kind is searched on its own and wins if anything at all
+    accepts it — funded or empty. Only when NOTHING of that kind is reachable
+    does it look at the other one, purely to be able to say what happened
+    ("your real account answers, your demo does not"), and what it finds is
+    returned with matches_request=False. A caller must not save that without
+    asking a human first.
+
+    Returns None when every combination is refused, which means the cookie
+    itself is dead, not that the account id is wrong.
+
+    `log` receives one line per attempt so the control panel can show progress;
+    an unattended run without it behaves identically.
+    """
+    def say(msg: str) -> None:
+        if log:
+            log(msg)
+
+    # Accept either form of input: the saved PO_SSID may already be a whole auth
+    # frame, and rebuilding a frame around a frame would refuse everything.
+    session = session_value(session)
+    uids = _uids(uid_hint)
+
+    wanted = await _search(session, uids, demo_hint, say)
+    if wanted is not None:
+        return wanted
+
+    # Nothing of the requested kind answered. Look at the other kind ONLY to
+    # explain why — a cookie that opens the real account but not the demo is a
+    # completely different problem from a dead cookie, and telling them apart
+    # is the difference between "paste a fresh cookie" and "your demo needs
+    # opening on Pocket Option first".
+    other = "real money" if demo_hint else "practice"
+    say(f"Nothing answered for that account. Checking whether your {other} "
+        f"account responds, so we know which problem this is…")
+    found = await _search(session, uids, not demo_hint, say)
+    if found is not None:
+        found.matches_request = False
+    return found
