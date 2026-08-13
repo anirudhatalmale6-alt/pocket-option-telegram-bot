@@ -97,5 +97,11 @@ echo "    http://localhost:${PORT}"
 echo "    (if that will not load, try http://penguin.linux.test:${PORT})"
 echo "Press Ctrl+C in this window to stop."
 echo
+# The single most common way this bot 'breaks': the window gets closed and the
+# bot goes with it, which from the browser looks like the panel dying on its
+# own. Say so here, where it is about to happen, rather than in a document.
+echo "KEEP THIS WINDOW OPEN — closing it stops the bot."
+echo "    To run it in the background instead:  bash start.sh"
+echo
 
 exec "$PY" main.py "$@"

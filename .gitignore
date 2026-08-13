@@ -2,3 +2,6 @@
 __pycache__/
 *.pyc
 .env
+bot.log
+bot.log.old
+bot.pid
