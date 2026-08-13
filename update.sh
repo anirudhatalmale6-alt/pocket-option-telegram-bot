@@ -62,12 +62,25 @@ then
     echo "  Refreshing the web page alone will NOT pick this up."
 fi
 
+# Keep the launcher icon in step with the code, silently. Asking someone to run
+# a second command to get the thing whose whole purpose is to save them running
+# commands would be a strange way round.
+if [ -f install_launcher.sh ]; then
+    bash install_launcher.sh >/dev/null 2>&1 || true
+fi
+
 cat <<EOF
 
-${GREEN}${BOLD}Done.${RESET} Now start it with:
+${GREEN}${BOLD}Done.${RESET} Now do this one thing:
 
-    bash run.sh --paper      (practice, no account)
-    bash run.sh              (your account, using .env)
+    ${BOLD}bash open_panel.sh${RESET}
+
+That starts the bot and opens the control panel by itself. Nothing else is
+needed, and nothing has to stay open afterwards.
+
+There is now also a ${BOLD}Pocket Option Bot${RESET} icon in your Chromebook's app list
+(under "Linux apps") that does exactly the same thing. Drag it to your shelf
+and you never need this terminal again.
 
 One thing that catches people out: your browser caches the control panel, so
 after an update press ${BOLD}Ctrl+Shift+R${RESET} on the page to force a fresh copy.

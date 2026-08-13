@@ -103,9 +103,12 @@ fi
 
 echo "Running in the background. You can close this window now."
 echo
-echo "    Control panel:  http://localhost:${PORT}"
-echo "                    (if that will not load: http://penguin.linux.test:${PORT})"
+echo "  ==> NEXT: open Chrome at  http://localhost:${PORT}"
+echo "      (if that will not load: http://penguin.linux.test:${PORT})"
 echo
-echo "    Is it alive?    bash status.sh"
-echo "    Stop it:        bash stop.sh"
-echo "    Watch the log:  tail -f bot.log"
+# Listing these as a bare menu got 'bash stop.sh' run as though it were step
+# two, which stopped the bot and made the panel look broken. They are not
+# steps, so they must not be laid out like steps.
+echo "Nothing else to do. Leave the bot alone unless you need one of these:"
+echo "    bash status.sh    check whether it is still running"
+echo "    bash stop.sh      shut it down (only when you want it OFF)"

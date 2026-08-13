@@ -36,7 +36,8 @@ kill "$PID" 2>/dev/null || true
 for _ in $(seq 1 20); do
     if ! kill -0 "$PID" 2>/dev/null; then
         rm -f "$PIDFILE"
-        echo "Stopped."
+        echo "Stopped. The control panel will not load until you start it again."
+        echo "To start it again:  bash open_panel.sh   (or click the Bot icon)"
         exit 0
     fi
     sleep 0.5
@@ -45,4 +46,5 @@ done
 echo "It did not shut down on its own — forcing it."
 kill -9 "$PID" 2>/dev/null || true
 rm -f "$PIDFILE"
-echo "Stopped."
+echo "Stopped. The control panel will not load until you start it again."
+echo "To start it again:  bash open_panel.sh   (or click the Bot icon)"

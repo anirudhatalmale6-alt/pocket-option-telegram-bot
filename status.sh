@@ -32,7 +32,9 @@ if [ "$RUNNING" = yes ]; then
 else
     echo "NOT RUNNING"
     echo
-    echo "  Start it with:  bash start.sh --paper"
+    echo "  That is why the control panel will not load. Start it again with:"
+    echo "      bash open_panel.sh"
+    echo "  (or just click the Pocket Option Bot icon in your app list)"
     echo
     echo "  (If you started it with run.sh in another window, this will still"
     echo "   say NOT RUNNING — run.sh does not leave a pid file behind.)"
