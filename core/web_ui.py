@@ -575,6 +575,13 @@ class WebInterface:
                 path = self.path.split("?")[0]
                 if path == "/":
                     self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+                elif path == "/hook":
+                    # Where the bookmarklet lands. Unauthenticated on purpose:
+                    # it serves a page, and the page does the authenticated POST
+                    # like any other. The cookie itself arrives in the URL
+                    # fragment, which browsers never send to a server — so it
+                    # stays in the tab until that POST.
+                    self._send(200, HOOK_PAGE.encode(), "text/html; charset=utf-8")
                 elif path == "/api/state":
                     if not self._authed():
                         self._json(401, {"error": "unauthorised"})
@@ -715,6 +722,13 @@ PAGE = r"""<!doctype html>
             read and followed. Left-aligned, wrapped, and wide enough to hold
             them. */
          max-width:min(560px,92vw);white-space:pre-line;text-align:left}
+  /* Deliberately looks like a button you would drag, not a link you would
+     read past. It is the most important control on the page. */
+  .bmk{display:inline-block;background:var(--blue);color:#fff;font-weight:650;
+       border-radius:9px;padding:8px 15px;text-decoration:none;margin:4px 0 0 4px;
+       cursor:grab;box-shadow:0 3px 10px rgba(59,130,246,.35)}
+  .howto{margin:12px 0 0;padding-left:22px}
+  .howto li{margin-bottom:9px}
   .toast.show{opacity:1}
   .toast.bad{border-color:rgba(239,68,68,.55);pointer-events:auto}
   .toast button{margin-top:10px;font-size:12.5px;padding:6px 12px}
@@ -749,11 +763,43 @@ PAGE = r"""<!doctype html>
     <div class="note" id="watch" style="display:none"></div>
   </div>
 
+  <!-- The one-click route, above the manual one because it is now the route.
+       Copying the cookie by hand failed four separate times for the person this
+       was built for — the value cell would not select, Ctrl+A grabbed the whole
+       table, the Console paste went into the filter box. Re-explaining the step
+       did not work any of those times, so the step is gone: this bookmark reads
+       the cookie itself and hands it straight to this panel. -->
+  <div class="card">
+    <h2>One-click connect</h2>
+    <div class="note">The easy way. No DevTools, no copying, and no way to
+      accidentally copy only half of it.</div>
+    <ol class="howto">
+      <li>Press <b>Ctrl+Shift+B</b> to show Chrome's bookmarks bar.</li>
+      <li>Drag this button up onto that bar:
+        <a id="bm-link" class="bmk" href="#" onclick="bmClick(event)">Send PO cookie to bot</a></li>
+      <li>Open <b>pocketoption.com</b> and log in.</li>
+      <li>On that page, click the bookmark you just made.</li>
+    </ol>
+    <div class="btns">
+      <button class="ghost" onclick="copyBookmarklet()">Dragging won't work? Copy the address instead</button>
+    </div>
+    <div class="sub" id="bm-alt" style="display:none;margin-top:10px">
+      Copied. Now open a new tab, go to <b>chrome://bookmarks</b>, click the
+      three dots at the top right, choose <b>Add new bookmark</b>, type any name,
+      paste into the URL box, and save. Then open Pocket Option, log in, and
+      click it.
+    </div>
+    <div class="sub" style="margin-top:10px">Your cookie goes from the Pocket
+      Option tab straight into this panel on your own computer. It is not sent
+      anywhere else, and it is wiped out of the address bar the moment it
+      arrives.</div>
+  </div>
+
   <!-- Account connection. Lives on the page because the alternative is asking
        a non-technical user to paste a 400-character secret into a hidden
        dotfile from a terminal, which is not a real option. -->
   <div class="card">
-    <h2>Your Pocket Option account</h2>
+    <h2>Your Pocket Option account &mdash; the manual way</h2>
     <div class="note" id="conn-state" style="margin-bottom:14px"></div>
     <div class="grid">
       <div style="grid-column:1/-1">
@@ -867,6 +913,46 @@ function headers(){
   const h = {'Content-Type':'application/json'};
   if (pass) h['X-Auth'] = pass;
   return h;
+}
+
+// ------------------------------------------------------------- bookmarklet
+//
+// Built here rather than written into the HTML because it has to carry this
+// panel's own address, and that address differs per machine: localhost:8080 for
+// most people, penguin.linux.test:8080 on a Chromebook, a LAN address on a VPS.
+// location.origin is always whatever actually worked to load this page.
+//
+// Pocket Option sets no HttpOnly flag on ci_session (checked against the live
+// headers), so a script on their page can read it. That is the whole trick.
+const BOOKMARKLET =
+  "javascript:(function(){" +
+  "var c=(document.cookie.split('; ').filter(function(x){" +
+  "return x.indexOf('ci_session=')===0})[0]||'').slice(11);" +
+  "if(!c){alert('No Pocket Option cookie on this page.\\n\\n" +
+  "Open pocketoption.com, log in, and click this bookmark from that tab.');return}" +
+  // The value rides in the fragment, which no browser sends to a server. It
+  // reaches the panel page in the tab and is posted from there.
+  "location.href=" + JSON.stringify(location.origin + "/hook#") +
+  "+encodeURIComponent(c)})()";
+
+function bmClick(ev){
+  // Clicking it here would run it against this page, which has no PO cookie —
+  // a confusing dead end. Say what to do with it instead.
+  ev.preventDefault();
+  toast("Don't click it here — this page has no Pocket Option cookie.\n\n" +
+        "Drag it up onto the bookmarks bar (Ctrl+Shift+B shows the bar), then " +
+        "click it while you are on pocketoption.com and logged in.", true);
+}
+
+async function copyBookmarklet(){
+  try{
+    await navigator.clipboard.writeText(BOOKMARKLET);
+    document.getElementById('bm-alt').style.display = 'block';
+    toast('Copied.');
+  }catch(e){
+    toast('This browser would not let me copy it. Drag the blue button onto ' +
+          'the bookmarks bar instead — same result.', true);
+  }
 }
 
 function hideToast(){
@@ -1178,8 +1264,127 @@ async function refresh(){
   }catch(e){ /* server restarting; the next tick will pick it up */ }
 }
 
+// Dragging an anchor to the bookmarks bar copies its href, so the href has to
+// be the real thing — a placeholder here would bookmark the placeholder.
+document.getElementById('bm-link').href = BOOKMARKLET;
+
 refresh();
 setInterval(refresh, 2000);
+</script>
+</body>
+</html>
+"""
+
+
+# --------------------------------------------------------------------------
+# Where the bookmarklet lands.
+#
+# The manual route — DevTools, find the cookie, select exactly its value, copy,
+# switch tabs, paste — failed four times in a row for the person this was
+# written for, in a different place each time: the value cell would not select,
+# Ctrl+A took the whole table, the paste went into the Console's filter box
+# instead of its prompt. Every one of those was answered by explaining the step
+# again, and every one failed again.
+#
+# So the step is gone. A bookmarklet on pocketoption.com reads document.cookie
+# (verified: Pocket Option sets no HttpOnly flag on ci_session, so script can
+# see it) and navigates here with the value in the URL fragment. Fragments are
+# never sent to a server, so it arrives in this page and nowhere else; the page
+# posts it to the panel over the same authenticated call the form uses, then
+# wipes it out of the address bar and the history entry.
+#
+# No selecting, no copying, no second window, and no way to copy half of it.
+# --------------------------------------------------------------------------
+HOOK_PAGE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connecting your Pocket Option account…</title>
+<style>
+  body{margin:0;background:#0e1117;color:#e6edf3;display:flex;min-height:100vh;
+       align-items:center;justify-content:center;padding:20px;
+       font:16px/1.6 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  .box{background:#161b24;border:1px solid #2a3342;border-radius:14px;
+       padding:26px 28px;max-width:560px;width:100%}
+  h1{font-size:19px;margin:0 0 14px}
+  p{margin:0 0 12px}
+  .muted{color:#8b97a8;font-size:14px}
+  .ok{color:#22c55e}
+  .bad{color:#ef4444}
+  a.btn{display:inline-block;margin-top:10px;background:#1d2430;border:1px solid #2a3342;
+        color:#e6edf3;border-radius:9px;padding:10px 16px;text-decoration:none}
+</style>
+</head>
+<body>
+<div class="box">
+  <h1 id="head">Connecting your Pocket Option account…</h1>
+  <p id="msg" class="muted">Reading the cookie the bookmark just handed over.</p>
+  <p id="len" class="muted"></p>
+  <a class="btn" href="/">Back to the control panel</a>
+</div>
+<script>
+// Same origin as the panel, so the password it stored is right here.
+const pass = localStorage.getItem('pobot_pass') || '';
+
+function say(head, msg, cls){
+  document.getElementById('head').textContent = head;
+  const m = document.getElementById('msg');
+  m.textContent = msg;
+  m.className = cls || 'muted';
+}
+
+async function go(){
+  const raw = location.hash.slice(1);
+  // Out of the address bar and out of the back button before anything else:
+  // this is a session secret and it should not sit in either.
+  history.replaceState(null, '', location.pathname);
+
+  if (!raw){
+    say('Nothing was handed over',
+        'Open pocketoption.com, log in, and click the bookmark from that tab. ' +
+        'Opening this address directly cannot work — the cookie comes from the ' +
+        'Pocket Option page, not from here.', 'bad');
+    return;
+  }
+
+  const session = decodeURIComponent(raw);
+  // The length is the one number worth showing. A whole cookie is several
+  // hundred characters, so a short one says "half of it came through" rather
+  // than "your login expired" — two failures that otherwise look identical.
+  document.getElementById('len').textContent =
+    'Cookie received: ' + session.length + ' characters.';
+
+  try{
+    const h = {'Content-Type':'application/json'};
+    if (pass) h['X-Auth'] = pass;
+    const r = await fetch('/api/cmd', {
+      method:'POST', headers:h,
+      // No account id on purpose — the panel tries every combination and keeps
+      // whichever one Pocket Option answers on.
+      body: JSON.stringify({action:'connect', session:session, uid:'', demo:true})
+    });
+    if (r.status === 401){
+      say('The panel wants its password',
+          'Go back to the control panel, enter the password when it asks, then ' +
+          'click the bookmark again.', 'bad');
+      return;
+    }
+    const res = await r.json();
+    if (res.ok){
+      say('Cookie accepted', (res.message || '') +
+          ' Sending you back to the panel — watch the log at the bottom.', 'ok');
+      setTimeout(() => { location.href = '/'; }, 4000);
+    } else {
+      say('Pocket Option would not take that cookie', res.message || 'No reason given.', 'bad');
+    }
+  }catch(e){
+    say('The panel is not answering',
+        'The terminal window that runs the bot has to stay open. If it was ' +
+        'closed, start it again with: bash run.sh --paper', 'bad');
+  }
+}
+go();
 </script>
 </body>
 </html>
