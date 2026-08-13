@@ -132,3 +132,34 @@ def test_a_whole_cookie_is_still_accepted():
     # The control: same code path, complete value, must pass. Without this the
     # test above would also pass if normalise() had started rejecting everything.
     assert normalise(BLOB, uid=138033625).startswith('42["auth",')
+
+
+# ------------------------------------------------------- sloppier copy routes
+#
+# "I don't think I can just tap once and copy, tried it and I also tried
+# ctrl a+c". Selecting exactly one cookie value in DevTools is the hardest
+# manual step in the whole setup, so accept the copies that are easy to make.
+
+def test_the_whole_cookie_header_is_accepted():
+    from urllib.parse import quote
+    # A real header carries the URL-encoded value — the blob's own semicolons
+    # would otherwise end the field early.
+    header = 'lang=en; ci_session=%s; po_uuid=1d04110b' % quote(BLOB)
+    assert normalise(header, uid=138033625) == normalise(BLOB, uid=138033625)
+
+
+def test_the_cookie_with_its_name_still_attached_is_accepted():
+    assert normalise('ci_session=' + BLOB, uid=138033625) == normalise(BLOB, uid=138033625)
+
+
+def test_an_auth_frame_is_left_alone_by_the_cookie_cleaner():
+    # The control: the cleaner must not go looking for cookies inside a frame
+    # that never had one, or it would mangle the DevTools route.
+    assert normalise(TRADING_LINE) == normalise(BLOB, uid=138033625)
+
+
+def test_a_truncated_cookie_header_is_still_caught():
+    header = 'lang=en; ci_session=%s' % HALF
+    with pytest.raises(SsidError) as err:
+        normalise(header, uid=138033625)
+    assert "cut off" in str(err.value)

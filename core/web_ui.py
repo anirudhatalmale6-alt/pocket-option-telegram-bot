@@ -229,7 +229,11 @@ class WebInterface:
         without a restart.
         """
         c = self.config
-        session = str(body.get("session", "")).strip()
+        # Clean here, not just inside normalise(): the raw value is what gets
+        # written to .env and handed to discovery, so a 'ci_session=' prefix
+        # would validate fine and then be saved in a form nothing can use.
+        from .ssid import clean_session_input
+        session = clean_session_input(str(body.get("session", "")))
         raw_uid = str(body.get("uid", "")).strip()
         demo = bool(body.get("demo", True))
 
@@ -251,6 +255,11 @@ class WebInterface:
         try:
             normalise(session, uid=uid or 1, demo=demo)
         except SsidError as exc:
+            # Also into the log feed, which scrolls and stays. A pop-up is the
+            # wrong home for several lines of instructions — it was reported as
+            # "the message that pops up is only for a short time period", and by
+            # then the only copy of the explanation had gone.
+            self.log(f"Cookie not accepted: {exc}")
             return {"ok": False, "message": str(exc)}
 
         # Save straight away when an id was supplied, so a restart is never left
@@ -701,9 +710,14 @@ PAGE = r"""<!doctype html>
   .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:22px;
          background:var(--panel2);border:1px solid var(--line);border-radius:10px;
          padding:12px 18px;font-size:14px;box-shadow:0 8px 26px rgba(0,0,0,.45);
-         opacity:0;pointer-events:none;transition:opacity .2s}
+         opacity:0;pointer-events:none;transition:opacity .2s;
+         /* Errors here are instructions, not status: several lines, meant to be
+            read and followed. Left-aligned, wrapped, and wide enough to hold
+            them. */
+         max-width:min(560px,92vw);white-space:pre-line;text-align:left}
   .toast.show{opacity:1}
-  .toast.bad{border-color:rgba(239,68,68,.55)}
+  .toast.bad{border-color:rgba(239,68,68,.55);pointer-events:auto}
+  .toast button{margin-top:10px;font-size:12.5px;padding:6px 12px}
   .note{color:var(--muted);font-size:12.5px;margin-top:10px}
   @media(max-width:560px){ button{flex:1 1 100%} .wrap{padding:12px} }
 </style>
@@ -841,7 +855,8 @@ PAGE = r"""<!doctype html>
   </div>
 
 </div>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast"><span id="toastmsg"></span>
+  <div><button id="toastx" onclick="hideToast()">Got it</button></div></div>
 
 <script>
 // Password is only needed if the server was started with one. It is kept in
@@ -854,12 +869,22 @@ function headers(){
   return h;
 }
 
+function hideToast(){
+  const t = document.getElementById('toast');
+  clearTimeout(t._h);
+  t.className = 'toast';
+}
+
 function toast(msg, bad){
   const t = document.getElementById('toast');
-  t.textContent = msg;
+  document.getElementById('toastmsg').textContent = msg;
   t.className = 'toast show' + (bad ? ' bad' : '');
   clearTimeout(t._h);
-  t._h = setTimeout(() => { t.className = 'toast'; }, 2600);
+  // Failures wait to be dismissed; only good news disappears on its own. An
+  // error here is usually a paragraph explaining what to do differently, and
+  // 2.6 seconds is not long enough to read one — never mind act on it.
+  document.getElementById('toastx').style.display = bad ? 'inline-block' : 'none';
+  if (!bad) t._h = setTimeout(() => { t.className = 'toast'; }, 2600);
 }
 
 async function cmd(body){

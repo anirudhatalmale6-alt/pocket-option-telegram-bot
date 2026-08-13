@@ -92,6 +92,36 @@ _TRUNCATED_HELP = (
 )
 
 
+# Matches the cookie as it appears in a whole Cookie header, e.g.
+#   lang=en; ci_session=a%3A4%3A%7B...%7D; po_uuid=...
+_COOKIE_FIELD_RE = re.compile(r'ci_session=([^;\s]+)')
+
+
+def clean_session_input(raw: str) -> str:
+    """
+    Pull the ci_session value out of whatever got pasted.
+
+    Copying exactly one cookie value out of DevTools turns out to be the hardest
+    manual step in this whole setup, so accept the easier copies too: the whole
+    Cookie header, or 'ci_session=...' on its own. Anything without that marker
+    — an auth frame, a bare blob — is returned untouched.
+    """
+    text = (raw or "").strip().strip('"').strip("'")
+    found = _COOKIE_FIELD_RE.search(text)
+    if not found:
+        return text
+    value = found.group(1)
+    if _looks_truncated(value):
+        # A Cookie header separates its fields with ';', but a session blob in
+        # its *decoded* form contains ';' inside itself — so stopping at the
+        # first one would cut a decoded paste to pieces. When that happens, the
+        # rest of the line is the better reading.
+        rest = text[found.end(1) - len(value):].strip()
+        if not _looks_truncated(rest):
+            return rest
+    return value
+
+
 def _canonical(session: str, uid: int, demo: bool) -> str:
     """Build the exact auth frame the trading socket expects."""
     payload = {
@@ -131,7 +161,7 @@ def normalise(raw: str, uid: int = 0, demo: bool = True) -> str:
     """
     if raw is None:
         raise SsidError("No Pocket Option token supplied — set PO_SSID in your .env.")
-    raw = raw.strip().strip('"').strip("'")
+    raw = clean_session_input(raw)
     if not raw:
         raise SsidError("No Pocket Option token supplied — set PO_SSID in your .env.")
 
