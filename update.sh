@@ -9,6 +9,14 @@
 
 set -euo pipefail
 
+# Everything below lives in a function that is only called on the very last
+# line. This script git-pulls a new copy of ITSELF while bash is still reading
+# it, and bash reads a script incrementally, by byte offset — so when the file
+# changes length mid-run, execution can resume in the middle of a line and die
+# with nonsense like "syntax error near unexpected token". Wrapping the body
+# forces bash to parse all of it up front, before the pull can move anything.
+main() {
+
 cd "$(dirname "$0")"
 
 BOLD=$(printf '\033[1m'); GREEN=$(printf '\033[32m'); RESET=$(printf '\033[0m')
@@ -56,8 +64,8 @@ then
     echo "${YELLOW}${BOLD}! The bot is still running, using the OLD code.${RESET}"
     echo "  Downloading an update does not change a program that is already going."
     echo
-    echo "  Go to the terminal window running the bot, press ${BOLD}Ctrl+C${RESET},"
-    echo "  then start it again with ${BOLD}bash run.sh${RESET}"
+    echo "  Restart it so the new code is the code that runs:"
+    echo "      ${BOLD}bash stop.sh && bash open_panel.sh${RESET}"
     echo
     echo "  Refreshing the web page alone will NOT pick this up."
 fi
@@ -86,3 +94,7 @@ One thing that catches people out: your browser caches the control panel, so
 after an update press ${BOLD}Ctrl+Shift+R${RESET} on the page to force a fresh copy.
 Without that you can be looking at the old panel and think nothing changed.
 EOF
+
+}
+
+main "$@"
