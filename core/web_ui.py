@@ -60,6 +60,11 @@ class WebInterface:
         self.connected = False
         self.paper = False          # True when running without a real account
         self.practice_note = ""     # what KIND of practice data, set by main.py
+        # Why the SAVED cookie was refused at startup, if it was. Kept apart
+        # from practice_note because it means something different: practice is a
+        # choice, this is a failure, and the panel must not present a token it
+        # already knows is unusable as though one were on its way in.
+        self.token_error = ""
         # Verify a pasted cookie against Pocket Option to find its real account
         # id. Switched off in tests, which must never touch the network.
         self.auto_discover = True
@@ -131,7 +136,11 @@ class WebInterface:
             "connected": self.connected,
             "mode": "PRACTICE" if self.paper else ("DEMO" if c.po_demo else "LIVE"),
             "is_live": self._is_live(),
-            "has_token": bool(c.po_ssid) or self.paper,
+            # A cookie that startup already rejected does not count as having
+            # one. Saying otherwise made the panel show "Connecting…" forever
+            # against an account it knew it could never reach.
+            "has_token": (bool(c.po_ssid) and not self.token_error) or self.paper,
+            "token_error": self.token_error,
             # Whether a token is set, never the token. This payload is served
             # over plain HTTP and echoed into the browser; the session string is
             # a password and has no business travelling back out again.
@@ -315,13 +324,14 @@ class WebInterface:
         c.po_demo = demo
         self.paper = False
         self.practice_note = ""
+        self.token_error = ""       # a new cookie retires the old complaint
         # Never log the token itself — this feed is on screen and in the logs.
         self.log(f"Account details saved (uid {uid}, "
                  f"{'DEMO' if demo else 'LIVE'}). Reconnecting…")
 
         if self.reload_cb is None:
             return {"ok": True, "message": "Saved to .env. Restart the bot to connect: "
-                                           "press Ctrl+C, then run  bash run.sh"}
+                                           "bash stop.sh && bash open_panel.sh"}
         try:
             self.reload_cb()
         except Exception as exc:
@@ -1090,8 +1100,21 @@ function render(s){
   pm.className = 'pill ' + (s.mode === 'LIVE' ? 'live' : 'demo');
 
   const pc = document.getElementById('p-conn');
-  pc.textContent = s.connected ? 'Connected' : (s.has_token ? 'Connecting…' : 'No token');
-  pc.className = 'pill' + (s.connected ? ' on' : '');
+  // "Connecting…" is a promise. Only say it when something really is on its way
+  // in: a rejected cookie is never going to connect, and practice mode is not
+  // connecting to anything at all.
+  // Practice is checked BEFORE s.connected, not after. A running practice
+  // session sets connected=true — it is connected to the simulator — and this
+  // pill then read "Connected" in green with no account anywhere near it.
+  // Every place this bot can imply a real connection it does not have has to be
+  // shut, not just the ones that have already burned someone.
+  pc.textContent = s.mode === 'PRACTICE' ? 'No account'
+    : (s.token_error ? 'Cookie rejected'
+    : (s.connected ? 'Connected'
+    : (s.has_token ? 'Connecting…' : 'No token')));
+  // Green is for a real account only, or the colour says "connected" while the
+  // words say "No account" and the colour is what gets read at a glance.
+  pc.className = 'pill' + (s.connected && s.mode !== 'PRACTICE' ? ' on' : '');
 
   document.getElementById('b-start').disabled = s.running || !s.has_token;
   document.getElementById('b-stop').disabled  = !s.running;
@@ -1160,14 +1183,22 @@ function render(s){
 
   // Connection card. Says what IS set without ever restating the secret.
   const cs = document.getElementById('conn-state');
-  if (s.session_set){
+  if (s.token_error){
+    // A cookie IS saved, so the branch below would have called it "connected
+    // details" and — because practice sets connected=true — followed it with
+    // "Pocket Option is responding", about an account the bot never reached.
+    cs.textContent = 'The saved cookie was refused, so no account is connected. ' +
+      'Send a fresh one with the one-click button above.';
+  } else if (s.session_set){
     // 'account 0' would read as an account called zero. It means no id was
     // needed, which is a fine outcome, so say that instead.
     cs.textContent = 'Connected details are saved (' +
       (s.uid ? 'account ' + s.uid : 'no account id needed') + ', ' +
       (s.demo ? 'demo balance' : 'REAL money') + '). ' +
-      (s.connected ? 'Pocket Option is responding.'
-                   : 'Not responding yet — if this does not clear, the cookie has expired; paste a fresh one.');
+      (s.mode === 'PRACTICE'
+         ? 'Not in use right now — this run is practice, on pretend money.'
+         : (s.connected ? 'Pocket Option is responding.'
+                        : 'Not responding yet — if this does not clear, the cookie has expired; paste a fresh one.'));
   } else {
     cs.textContent = 'No account connected yet — the bot is on practice data. ' +
       'Paste your cookie below to trade on your own Pocket Option balance.';

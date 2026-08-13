@@ -62,3 +62,25 @@ def test_connected_message_is_not_used_for_practice():
     connected_at = src.index("Connected to Pocket Option (")
     between = src[practice_at:connected_at]
     assert "else:" in between, "practice branch must not fall through"
+
+
+def test_the_connection_pill_checks_practice_before_connected():
+    """
+    The panel's connection pill.
+
+    A running practice session sets connected=true — it genuinely is connected,
+    to the simulator — so a pill written as `connected ? 'Connected' : ...` said
+    "Connected" in green with no account anywhere in the picture. Order matters
+    here and nothing else in the file enforces it, so pin it: the PRACTICE test
+    must come before the connected test, in both the text and the colour.
+    """
+    from core import web_ui
+
+    text = open(web_ui.__file__, encoding="utf-8").read()
+    start = text.index("const pc = document.getElementById('p-conn')")
+    pill = text[start:text.index("b-start", start)]
+
+    label = pill.index("pc.textContent")
+    assert pill.index("'PRACTICE'", label) < pill.index("s.connected ?", label)
+    # ...and the green class, which is what actually gets read at a glance.
+    assert "s.connected && s.mode !== 'PRACTICE'" in pill

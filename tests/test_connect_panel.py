@@ -99,7 +99,16 @@ def test_without_a_reload_callback_it_says_how_to_restart(panel):
     panel.reload_cb = None
     res = panel.command({"action": "connect", "session": GOOD, "uid": "1", "demo": True})
     assert res["ok"] is True
-    assert "run.sh" in res["message"]
+    # Name a script that still exists. This used to say "run.sh", which was
+    # replaced months ago — the assertion passed the whole time because it only
+    # checked for the substring, and "run.sh" is inside "open_panel.sh" too.
+    # Instructions that name a missing file are worse than none: they read as a
+    # broken install. So check the repo really ships what the message says.
+    named = [w.strip(".,") for w in res["message"].split() if w.endswith(".sh")]
+    assert named
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for script in named:
+        assert os.path.exists(os.path.join(here, script)), f"{script} does not exist"
 
 
 # ------------------------------------------------------------ bad input first
@@ -188,3 +197,40 @@ def test_the_token_is_never_written_into_the_activity_log(panel):
 def test_the_env_file_is_not_world_readable(panel):
     panel.command({"action": "connect", "session": GOOD, "uid": "1", "demo": True})
     assert oct(os.stat(panel.env_path).st_mode)[-3:] == "600"
+
+
+# ------------------------------------------------- a token startup already refused
+def test_a_rejected_cookie_does_not_count_as_having_a_token(panel):
+    """
+    When main.py cannot build a broker from the saved cookie it falls back to
+    practice so the panel stays reachable — the panel is the only way to deliver
+    a replacement. But the config still holds that dead cookie, and the panel
+    used to read "has a token" straight off it and show "Connecting…" against an
+    account it already knew it could never reach. Waiting for a connection that
+    cannot arrive is indistinguishable from a slow one; there is nothing on
+    screen to tell you to send a new cookie.
+    """
+    panel.config.po_ssid = "a-cookie-that-was-refused"
+    panel.paper = False
+    panel.token_error = "That does not look like a Pocket Option session cookie."
+
+    st = panel.state()
+    assert st["has_token"] is False
+    assert st["token_error"]
+
+
+def test_sending_a_new_cookie_retires_the_old_complaint(panel):
+    panel.token_error = "the previous one was rubbish"
+    panel.command({"action": "connect", "session": GOOD, "uid": "1", "demo": True})
+    st = panel.state()
+    assert st["token_error"] == ""
+    assert st["has_token"] is True
+
+
+def test_practice_can_still_press_start_after_a_rejected_cookie(panel):
+    # The fallback's whole purpose is a usable panel. Practice needs no token,
+    # so START must not be disabled by the dead one sitting in the config.
+    panel.config.po_ssid = "a-cookie-that-was-refused"
+    panel.paper = True
+    panel.token_error = "no good"
+    assert panel.state()["has_token"] is True

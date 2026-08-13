@@ -182,6 +182,7 @@ async def run(paper: bool) -> None:
         web.reload_cb = reconnect
         web.paper = practice
         web.practice_note = practice_note
+        web.token_error = token_error
         web.start()
         if token_error:
             # Into the panel's own activity feed. It was only ever logged to the
@@ -189,7 +190,13 @@ async def run(paper: bool) -> None:
             # is watching a terminal any more.
             web.log("The saved Pocket Option cookie could not be used, so the bot "
                     "started in practice mode.")
-            web.log(f"Reason: {token_error}")
+            # First line only. These messages carry several paragraphs of
+            # DevTools instructions for whoever is reading the terminal, and
+            # dumping all of that into the panel would bury the one thing that
+            # actually needs doing under the exact manual procedure the
+            # one-click button exists to replace. The full text is in the
+            # terminal log above for anyone who wants it.
+            web.log(f"Reason: {token_error.strip().splitlines()[0]}")
             web.log("Send a fresh cookie with the one-click button and it will "
                     "switch to your account — no restart needed.")
         shown = "localhost" if config.web_host in ("0.0.0.0", "") else config.web_host
