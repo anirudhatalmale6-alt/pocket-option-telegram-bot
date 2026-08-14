@@ -69,13 +69,65 @@ PYEOF
 # the old files at startup and will keep using them. Refreshing the browser does
 # not help either, because the page is served by that same old process. So stop
 # it — and then start it again unconditionally, below.
-if listening; then
+UNIT=pocket-option-bot.service
+
+systemd_running() {
+    command -v systemctl >/dev/null 2>&1 &&
+        systemctl --user is-active --quiet "$UNIT" 2>/dev/null
+}
+
+# Wait for the port to actually come free. `kill` returning 0 only means the
+# signal was delivered.
+wait_until_free() {
+    for _ in $(seq 1 20); do
+        listening || return 0
+        sleep 0.5
+    done
+    return 1
+}
+
+STOPPED=yes
+if systemd_running; then
+    # Started by the autostart service, so there is no bot.pid and stop.sh
+    # cannot touch it — it would report "nothing was started with start.sh",
+    # exit 0, and this script would go on to claim the new code was running
+    # while the old process kept serving the panel. Ask systemd instead.
+    echo "${BOLD}==>${RESET} Restarting the background service..."
+    systemctl --user restart "$UNIT" >/dev/null 2>&1 || true
+    # Not wait_until_free: systemd brings it straight back up on the new code,
+    # so the port being busy again is success here, not failure. Give it a
+    # moment to rebind, then let open_panel.sh below find it already running.
+    for _ in $(seq 1 20); do
+        listening && break
+        sleep 0.5
+    done
+elif listening; then
     echo "${BOLD}==>${RESET} Stopping the old version..."
     # Deliberately not `stop.sh && start.sh`. Chaining them on && means any
     # non-zero exit from the stop leaves the bot down and never starts it back
     # up, which is the worst possible outcome for a script whose entire job is
     # to leave you running the new code.
     bash stop.sh >/dev/null 2>&1 || true
+    # Verify. stop.sh works from bot.pid alone, so anything started another way
+    # — by hand with run.sh, or by a service — survives it and stop.sh still
+    # exits 0. Without this check the green "Done" below is simply false, and
+    # the next report is "the update didn't change anything".
+    wait_until_free || STOPPED=no
+fi
+
+if [ "$STOPPED" = no ]; then
+    cat <<EOF
+
+${YELLOW}${BOLD}The new code downloaded, but the running bot would not stop.${RESET}
+
+Something is still using port ${PORT}, so the panel you see is the OLD version.
+I would rather say that than print "Done" over the top of it.
+
+Close any terminal window that has the bot running in it and press Ctrl+C
+there, then run this again. If there is no such window, restart Linux:
+right-click the Terminal icon, choose ${BOLD}Shut down Linux${RESET}, and reopen it.
+EOF
+    exit 1
 fi
 
 # ALWAYS end with the bot running and the panel open.
