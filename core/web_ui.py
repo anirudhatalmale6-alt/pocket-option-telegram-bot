@@ -405,6 +405,15 @@ class WebInterface:
                          "there (top right), then click the bookmark again — "
                          "that usually wakes the demo account up. I have "
                          "deliberately not connected you to real money.")
+            if self.config.po_ssid:
+                # Refusing to save leaves the trader on whatever was saved
+                # BEFORE, which is usually a stale cookie sitting at -1.00 with
+                # a warning under it about expired sessions. Read straight after
+                # sending a fresh cookie, that warning looks like a verdict on
+                # the cookie just sent — it is not. Say whose number it is.
+                self.log("Note: any balance or connection warning below this is "
+                         "about the cookie that was saved BEFORE, not the one "
+                         "you just sent. Yours was not used.")
             return
 
         if found.balance > 0:
