@@ -120,6 +120,15 @@ if [ -f install_launcher.sh ]; then
     bash install_launcher.sh >/dev/null 2>&1 || true
 fi
 
+# Same reasoning for the autostart registration. "The localhost website isn't
+# working" has been reported three times now, and every time the cause was the
+# Linux container having been stopped — by a shutdown, or by ChromeOS deciding
+# to stop it — taking the bot with it. Nobody should have to know that, or
+# remember a command to undo it.
+if [ -f install_autostart.sh ]; then
+    bash install_autostart.sh >/dev/null 2>&1 || true
+fi
+
 }
 
 main "$@"
