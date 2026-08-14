@@ -390,3 +390,33 @@ def test_junk_in_the_scraped_id_list_is_dropped(panel, monkeypatch):
 
 def test_no_scraped_ids_is_not_an_error(panel, monkeypatch):
     assert _hint(panel, monkeypatch, uid="", demo=True)["cands"] == []
+
+
+# ------------------------------- an old bookmark is invisible unless we say so
+#
+# Updating the bot does not update a bookmark: the JavaScript was copied into
+# Chrome when it was made. An old one still sends the cookie, so nothing looks
+# broken — it just never sends account ids and the search keeps failing for a
+# reason nobody can see.
+def test_a_bookmark_that_sends_no_ids_at_all_is_called_out(panel):
+    # The /hook page is always served by the CURRENT server, so it always posts
+    # a uids field and an old bookmark is invisible from here. It has to say so
+    # explicitly, and this asserts on the flag it actually sends.
+    panel.command({"action": "connect", "session": GOOD, "uid": "", "demo": True,
+                   "uids": [], "stale": True, "via": "bookmarklet"})
+    said = " ".join(e["text"] for e in panel.state()["log"])
+    assert "older version" in said
+
+
+def test_a_current_bookmark_that_found_no_ids_is_not_nagged(panel):
+    """An empty list means the page had none — not that the bookmark is old."""
+    panel.command({"action": "connect", "session": GOOD, "uid": "", "demo": True,
+                   "uids": [], "stale": False, "via": "bookmarklet"})
+    said = " ".join(e["text"] for e in panel.state()["log"])
+    assert "older version" not in said
+
+
+def test_typing_the_cookie_in_by_hand_is_not_called_an_old_bookmark(panel):
+    panel.command({"action": "connect", "session": GOOD, "uid": "", "demo": True})
+    said = " ".join(e["text"] for e in panel.state()["log"])
+    assert "older version" not in said

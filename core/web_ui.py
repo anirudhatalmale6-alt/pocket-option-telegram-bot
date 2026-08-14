@@ -285,6 +285,17 @@ class WebInterface:
             if 99999 < n < 10 ** 13 and n not in candidates:
                 candidates.append(n)
 
+        # Only the /hook page can tell an out-of-date bookmark from a current
+        # one that found nothing: this page is always served by the current
+        # server, so both post a uids field, and the difference lives in the
+        # fragment the bookmark itself produced. Hence a flag rather than an
+        # inference from the list being empty.
+        if trusted and body.get("stale"):
+            self.log("Note: that bookmark is an older version — it sent the "
+                     "cookie but no account ids, so the search cannot look for "
+                     "your demo account properly. Make the bookmark again from "
+                     "the button on this page and delete the old one.")
+
         # Validate BEFORE writing anything. ssid.normalise knows the difference
         # between the trading token and the chart token that gets copied by
         # mistake, and explains which is which — far better than saving a broken
@@ -1533,6 +1544,13 @@ async function go(){
   document.getElementById('len').textContent =
     'Cookie received: ' + session.length + ' characters.';
 
+  // Updating the bot does NOT update a bookmark: the JavaScript was copied into
+  // Chrome when it was made and stays exactly as it was. An old bookmark still
+  // sends the cookie, so nothing looks broken — it just silently never sends
+  // any account ids, and the search goes on failing for a reason nobody can
+  // see. The missing separator is the tell.
+  const stale = bar === -1;
+
   try{
     const h = {'Content-Type':'application/json'};
     if (pass) h['X-Auth'] = pass;
@@ -1540,8 +1558,13 @@ async function go(){
       method:'POST', headers:h,
       // No account id on purpose — the panel tries every combination and keeps
       // whichever one Pocket Option answers on.
+      // `stale` has to be sent explicitly. This page is always served by the
+      // CURRENT server, so it always posts a uids field — an out-of-date
+      // bookmark is invisible from the server side, and only the missing
+      // separator in the fragment gives it away. Deciding it here is the only
+      // place it can be decided.
       body: JSON.stringify({action:'connect', session:session, uid:'', demo:true,
-                            uids:uids, via:'bookmarklet'})
+                            uids:uids, stale:stale, via:'bookmarklet'})
     });
     if (r.status === 401){
       say('The panel wants its password',
@@ -1550,7 +1573,18 @@ async function go(){
       return;
     }
     const res = await r.json();
-    if (res.ok){
+    if (res.ok && stale){
+      // Deliberately NOT auto-returning to the panel here, and deliberately
+      // not styled as success. The cookie did arrive, so the run continues —
+      // but this is the difference between a search that can find the demo
+      // account and one that cannot, and it is invisible from the log.
+      say('Cookie accepted — but your bookmark is out of date',
+          (res.message || '') + ' It sent the cookie without any account ids, ' +
+          'so the search cannot look for your demo account properly. Updating ' +
+          'the bot does not update a bookmark. Go back to the panel, make the ' +
+          'bookmark again from the button there, delete the old one, and click ' +
+          'the new one on pocketoption.com.', 'bad');
+    } else if (res.ok){
       say('Cookie accepted', (res.message || '') +
           ' Sending you back to the panel — watch the log at the bottom.', 'ok');
       setTimeout(() => { location.href = '/'; }, 4000);
