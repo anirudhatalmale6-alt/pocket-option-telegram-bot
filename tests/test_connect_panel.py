@@ -274,3 +274,69 @@ def test_the_matching_account_is_still_saved_normally(panel):
     panel._apply_discovery(_Found(555, demo=True, balance=50.0), GOOD, demo=True)
     assert panel.config.po_uid == 555
     assert panel.config.po_demo is True
+
+
+# ------------------------------- a saved account id belongs to ONE kind of account
+#
+# Reported as "it tries to connect for about 5 min then fails", with a log
+# reading:
+#
+#   Trying your practice (account id 138033625)…
+#   refused — not the practice (account id 138033625)
+#
+# 138033625 is his REAL-money account. It is not the practice account and never
+# could be, so that attempt was doomed before it was sent. The bookmarklet posts
+# uid:'' on purpose precisely so the panel can search; `int(raw_uid or c.po_uid
+# or 0)` threw that away and resurrected the last id saved.
+def _hint(panel, monkeypatch, **body):
+    """The uid the account search is actually started with."""
+    seen = {}
+    panel.auto_discover = True
+    monkeypatch.setattr(panel, "_discover_async",
+                        lambda session, uid, demo: seen.update(uid=uid, demo=demo))
+    panel.command({"action": "connect", "session": GOOD, **body})
+    return seen
+
+
+def test_a_real_money_id_is_not_used_as_the_hint_for_a_practice_request(panel, monkeypatch):
+    panel.config.po_uid = 138033625      # saved when the real account connected
+    panel.config.po_demo = False
+    assert _hint(panel, monkeypatch, uid="", demo=True)["uid"] == 0
+
+
+def test_a_saved_id_is_still_reused_when_the_kind_matches(panel, monkeypatch):
+    # The fix must not throw away a genuinely useful hint: re-sending a cookie
+    # for the same kind of account should not re-run the whole search blind.
+    panel.config.po_uid = 138033625
+    panel.config.po_demo = False
+    assert _hint(panel, monkeypatch, uid="", demo=False)["uid"] == 138033625
+
+
+def test_a_typed_id_always_wins(panel, monkeypatch):
+    panel.config.po_uid = 138033625
+    panel.config.po_demo = False
+    assert _hint(panel, monkeypatch, uid="999", demo=True)["uid"] == 999
+
+
+def test_a_leftover_id_is_never_written_against_the_new_flag(panel):
+    """
+    The pre-save is what produced "Pocket Option is NOT accepting your login"
+    one second after a good cookie arrived.
+
+    Saving uid 138033625 (real) with PO_DEMO=true is a pair Pocket Option
+    refuses in silence, so the trader reconnected on it, read balance -1.00 and
+    blamed the cookie. The panel had invented the broken pair itself.
+    """
+    panel.config.po_uid = 138033625
+    panel.config.po_demo = False
+    panel.auto_discover = False
+    panel.command({"action": "connect", "session": GOOD, "uid": "", "demo": True})
+
+    assert not os.path.exists(panel.env_path), (
+        "an unverified account id was written to .env before discovery ran")
+
+
+def test_a_typed_id_is_still_saved_immediately(panel):
+    # Someone who dug the id out of DevTools should not lose it to a restart.
+    panel.command({"action": "connect", "session": GOOD, "uid": "777", "demo": True})
+    assert _env(panel)["PO_UID"] == "777"

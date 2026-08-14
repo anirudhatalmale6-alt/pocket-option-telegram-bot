@@ -255,9 +255,23 @@ class WebInterface:
             return {"ok": False, "message": "Paste the ci_session cookie first."}
 
         try:
-            uid = int(raw_uid or c.po_uid or 0)
+            typed_uid = int(raw_uid) if raw_uid else 0
         except ValueError:
             return {"ok": False, "message": "The account id should be digits only."}
+
+        # An account id means nothing on its own. The demo balance and the real
+        # balance have DIFFERENT ids, and sending one id with the other's isDemo
+        # flag is refused in silence. So a previously saved id may only be
+        # reused as a hint when it belongs to the same KIND of account as the
+        # one being asked for now.
+        #
+        # This line used to be `int(raw_uid or c.po_uid or 0)`. The bookmarklet
+        # sends uid:'' deliberately, so that `or` quietly resurrected the
+        # REAL-money id saved on a previous connection and applied it to a
+        # practice request — producing "Trying your practice (account id
+        # 138033625)…" for an id that is not the practice account and never
+        # could be. Every practice attempt was doomed before it was sent.
+        hint = typed_uid or (c.po_uid if c.po_demo == demo else 0)
 
         # Validate BEFORE writing anything. ssid.normalise knows the difference
         # between the trading token and the chart token that gets copied by
@@ -267,7 +281,7 @@ class WebInterface:
         # real id is discovered below.
         from .ssid import SsidError, normalise
         try:
-            normalise(session, uid=uid or 1, demo=demo, trusted=trusted)
+            normalise(session, uid=typed_uid or 1, demo=demo, trusted=trusted)
         except SsidError as exc:
             # Also into the log feed, which scrolls and stays. A pop-up is the
             # wrong home for several lines of instructions — it was reported as
@@ -276,10 +290,17 @@ class WebInterface:
             self.log(f"Cookie not accepted: {exc}")
             return {"ok": False, "message": str(exc)}
 
-        # Save straight away when an id was supplied, so a restart is never left
-        # with nothing, then check it in the background. With no id there is
-        # nothing worth writing yet — discovery supplies it.
-        result = (self._save_account(session, uid, demo) if uid else
+        # Save straight away ONLY when an id was typed in THIS request, so a
+        # restart is never left with nothing, then check it in the background.
+        # With no id there is nothing worth writing yet — discovery supplies it.
+        #
+        # Never pre-save a leftover id. Pairing the previous account's id with
+        # the newly requested isDemo flag writes a combination Pocket Option
+        # always refuses, and the trader then reconnects on it and reports
+        # "Pocket Option is NOT accepting your login" — seconds after a
+        # perfectly good cookie arrived, and about a pair the panel invented
+        # rather than anything the cookie was wrong about.
+        result = (self._save_account(session, typed_uid, demo) if typed_uid else
                   {"ok": True, "message": "Working out which account this cookie "
                                           "belongs to — watch the log below."})
 
@@ -287,7 +308,7 @@ class WebInterface:
         # single worst step in setting this up, and a mismatched one is refused
         # in complete silence — so the panel works it out itself. On a thread,
         # because each combination takes a few seconds and the page must not hang.
-        self._discover_async(session, uid, demo)
+        self._discover_async(session, hint, demo)
         return result
 
     def _save_account(self, session: str, uid: int, demo: bool) -> dict:
