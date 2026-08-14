@@ -55,15 +55,28 @@ class Account:
         return f"{which} ({who})"
 
 
-def _uids(uid_hint: int) -> List[int]:
+def _uids(uid_hint: int, candidates: Optional[List[int]] = None) -> List[int]:
     """
     The account ids worth trying, best guess first.
 
+    `candidates` are ids the bookmarklet scraped off Pocket Option's own page.
+    The demo balance and the real balance have different ids and the cookie
+    carries neither, so when the saved id is the wrong one these are the only
+    thing standing between the user and reading a WebSocket frame in DevTools.
+
     uid 0 is included because Pocket Option may derive the account from the
     session alone; if it does, that combination works and the uid never
-    mattered.
+    mattered. It goes last: it is the least likely to be accepted, and every
+    combination costs up to CONNECT_TIMEOUT seconds of somebody's afternoon.
     """
-    return ([uid_hint] if uid_hint else []) + [0]
+    out: List[int] = [uid_hint] if uid_hint else []
+    for uid in (candidates or []):
+        # Bounded deliberately. Each extra id is another connect-and-wait, and
+        # a page with a dozen numeric ids in storage would turn one click into
+        # a ten-minute stare at a spinner.
+        if uid and uid not in out and len(out) < 5:
+            out.append(uid)
+    return out + [0]
 
 
 async def _try_one(session: str, uid: int, demo: bool) -> Optional[float]:
@@ -128,7 +141,8 @@ async def _search(session: str, uids: List[int], demo: bool,
 
 
 async def find_account(session: str, uid_hint: int = 0, demo_hint: bool = True,
-                       log: Optional[Callable[[str], None]] = None
+                       log: Optional[Callable[[str], None]] = None,
+                       candidates: Optional[List[int]] = None
                        ) -> Optional[Account]:
     """
     Find which account this session cookie opens, for the kind that was ASKED
@@ -162,7 +176,11 @@ async def find_account(session: str, uid_hint: int = 0, demo_hint: bool = True,
     # Accept either form of input: the saved PO_SSID may already be a whole auth
     # frame, and rebuilding a frame around a frame would refuse everything.
     session = session_value(session)
-    uids = _uids(uid_hint)
+    uids = _uids(uid_hint, candidates)
+    extra = len(uids) - (2 if uid_hint else 1)
+    if extra > 0:
+        say(f"Found {extra} account id(s) on the Pocket Option page to try as "
+            f"well as the usual ones.")
 
     wanted = await _search(session, uids, demo_hint, say)
     if wanted is not None:

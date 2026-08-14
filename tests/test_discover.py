@@ -191,3 +191,34 @@ def test_machine_built_frame_without_a_uid_is_accepted():
     assert normalise(_canonical(BLOB, 0, True))
     with pytest.raises(Exception):
         normalise('42["auth",{"sessionToken":"' + "a" * 32 + '","isChart":1}]')
+
+
+# ------------------------------- ids scraped off the Pocket Option page itself
+#
+# The cookie identifies the session but not which balance it may touch. Demo
+# and real have different ids, and his saved one was the real account's — so
+# every practice attempt was doomed and the only documented alternative was
+# reading a WebSocket frame in DevTools. The bookmarklet now collects numeric
+# id candidates from the page's own storage instead.
+def test_scraped_ids_are_tried_after_the_hint_and_before_giving_up():
+    assert _uids(111111, [222222, 333333]) == [111111, 222222, 333333, 0]
+
+
+def test_scraped_ids_are_used_when_there_is_no_hint():
+    assert _uids(0, [222222]) == [222222, 0]
+
+
+def test_the_hint_is_not_tried_twice_when_it_is_also_scraped():
+    assert _uids(111111, [111111, 222222]) == [111111, 222222, 0]
+
+
+def test_the_number_of_ids_tried_is_bounded():
+    """Each id is another connect-and-wait; a storage full of numbers must not
+    turn one click into a ten-minute stare at a spinner."""
+    got = _uids(1, list(range(900000, 900020)))
+    assert len(got) == 6                       # 5 tried + uid 0
+    assert got[-1] == 0
+
+
+def test_zero_is_still_tried_last_with_no_candidates():
+    assert _uids(0, None) == [0]

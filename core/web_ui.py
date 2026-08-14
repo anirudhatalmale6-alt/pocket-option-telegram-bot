@@ -273,6 +273,18 @@ class WebInterface:
         # could be. Every practice attempt was doomed before it was sent.
         hint = typed_uid or (c.po_uid if c.po_demo == demo else 0)
 
+        # Account ids the bookmarklet scraped off Pocket Option's own page.
+        # Filtered hard on the way in as well as on the way out: this arrives
+        # over HTTP and is about to be put into an auth frame.
+        candidates = []
+        for raw in (body.get("uids") or [])[:8]:
+            try:
+                n = int(str(raw).strip())
+            except (TypeError, ValueError):
+                continue
+            if 99999 < n < 10 ** 13 and n not in candidates:
+                candidates.append(n)
+
         # Validate BEFORE writing anything. ssid.normalise knows the difference
         # between the trading token and the chart token that gets copied by
         # mistake, and explains which is which — far better than saving a broken
@@ -308,7 +320,7 @@ class WebInterface:
         # single worst step in setting this up, and a mismatched one is refused
         # in complete silence — so the panel works it out itself. On a thread,
         # because each combination takes a few seconds and the page must not hang.
-        self._discover_async(session, hint, demo)
+        self._discover_async(session, hint, demo, candidates)
         return result
 
     def _save_account(self, session: str, uid: int, demo: bool) -> dict:
@@ -362,7 +374,8 @@ class WebInterface:
         return {"ok": True, "message": "Saved. Connecting to your Pocket Option "
                                        "account now — watch the badge at the top."}
 
-    def _discover_async(self, session: str, uid: int, demo: bool) -> None:
+    def _discover_async(self, session: str, uid: int, demo: bool,
+                        candidates: Optional[List[int]] = None) -> None:
         """Run the account search on its own thread, logging as it goes."""
         import threading
 
@@ -375,7 +388,8 @@ class WebInterface:
             self.log("Working out which Pocket Option account this cookie opens…")
             try:
                 found = _aio.run(find_account(session, uid_hint=uid,
-                                              demo_hint=demo, log=self.log))
+                                              demo_hint=demo, log=self.log,
+                                              candidates=candidates))
             except Exception as exc:
                 self.log(f"Could not check the account: {type(exc).__name__}: {exc}")
                 found = None
@@ -383,6 +397,25 @@ class WebInterface:
 
         threading.Thread(target=work, daemon=True,
                          name="po-account-discovery").start()
+
+    def _forget_account_id(self) -> None:
+        """
+        Drop a saved account id that has just been shown to be the wrong one.
+
+        Only the id. The cookie and the demo/live choice are left exactly as
+        they are: this runs on a failed search, and quietly changing which
+        ACCOUNT the bot points at as a side effect of a failure is the class of
+        move that cost this project real money once already.
+        """
+        try:
+            from .envfile import update
+            update({"PO_UID": ""})
+        except OSError:
+            pass                     # a stale id in the file is not worth a crash
+        self.config.po_uid = 0
+        self.log("Clearing the saved account id — it is not this account's, so "
+                 "the next attempt will search from scratch instead of "
+                 "repeating it.")
 
     def _apply_discovery(self, found, session: str, demo: bool) -> None:
         """
@@ -392,6 +425,19 @@ class WebInterface:
         decides is which account a self-trading bot gets pointed at, so it must
         not be reachable only through a background thread and a live socket.
         """
+        # Whatever happened below, the search has just proved something about
+        # the id sitting in .env: if the requested kind of account was not
+        # reached, then a saved id claiming to BE that kind is wrong, and
+        # leaving it there makes the next attempt repeat this one exactly.
+        #
+        # This matters because a now-fixed bug wrote precisely that pair: the
+        # real-money id stored with PO_DEMO=true. A file in that state survives
+        # the fix, and the kind-matches test in _connect would be satisfied by
+        # it and hand the same doomed id back to the search for ever.
+        if (found is None or not found.matches_request) and \
+                self.config.po_uid and self.config.po_demo == demo:
+            self._forget_account_id()
+
         if found is None:
             # Every combination refused means the cookie is dead — a wrong
             # account id would have been fixed by one of the four attempts.
@@ -1006,10 +1052,32 @@ const BOOKMARKLET =
   "return x.indexOf('ci_session=')===0})[0]||'').slice(11);" +
   "if(!c){alert('No Pocket Option cookie on this page.\\n\\n" +
   "Open pocketoption.com, log in, and click this bookmark from that tab.');return}" +
+  // Also collect account-id candidates from the page's own storage.
+  //
+  // The cookie identifies the SESSION; it does not say which of your balances
+  // it may touch. That is the uid, the demo and real balances have different
+  // ones, and sending the wrong one is refused in silence. Pocket Option's own
+  // page has to know both to draw the account switcher, so they are in here
+  // somewhere — under a key whose name nobody promised us, hence the walk.
+  //
+  // ONLY INTEGERS LEAVE THE PAGE. This walks whole parsed objects, which will
+  // include tokens and personal details, and keeps nothing but numbers in a
+  // plausible id range. Nothing else is recorded, sent or logged.
+  "var d={};" +
+  "var K=/uid|userid|user_id|account/i;" +
+  "function keep(x){var n=parseInt(x,10);" +
+  "if(n>99999&&n<1e13&&String(n)===String(x).trim())d[n]=1}" +
+  "function walk(v,z){if(!v||typeof v!=='object'||z>4)return;" +
+  "for(var k in v){try{if(K.test(k))keep(v[k]);walk(v[k],z+1)}catch(e){}}}" +
+  "[localStorage,sessionStorage].forEach(function(s){" +
+  "for(var i=0;i<s.length;i++){try{var k=s.key(i),r=s.getItem(k);" +
+  "if(K.test(k))keep(r);" +
+  "if(r&&(r.charAt(0)==='{'||r.charAt(0)==='['))walk(JSON.parse(r),0)" +
+  "}catch(e){}}});" +
   // The value rides in the fragment, which no browser sends to a server. It
   // reaches the panel page in the tab and is posted from there.
   "location.href=" + JSON.stringify(location.origin + "/hook#") +
-  "+encodeURIComponent(c)})()";
+  "+encodeURIComponent(c)+'|'+Object.keys(d).slice(0,8).join(',')})()";
 
 function bmClick(ev){
   // Clicking it here would run it against this page, which has no PO cookie —
@@ -1449,7 +1517,16 @@ async function go(){
     return;
   }
 
-  const session = decodeURIComponent(raw);
+  // The bookmark appends "|<id>,<id>,…" — account-id candidates it scraped off
+  // the Pocket Option page. The demo balance and the real balance have
+  // different ids and the cookie carries neither, so without these the only
+  // way to reach a demo account whose id we do not have is DevTools, which
+  // cost this project two days. Integers only ever cross: the scrape reads
+  // whole objects but keeps nothing but numbers.
+  const bar = raw.indexOf('|');
+  const session = decodeURIComponent(bar === -1 ? raw : raw.slice(0, bar));
+  const uids = bar === -1 ? [] :
+    raw.slice(bar + 1).split(',').filter(x => /^[0-9]{6,13}$/.test(x));
   // The length is the one number worth showing. A whole cookie is several
   // hundred characters, so a short one says "half of it came through" rather
   // than "your login expired" — two failures that otherwise look identical.
@@ -1464,7 +1541,7 @@ async function go(){
       // No account id on purpose — the panel tries every combination and keeps
       // whichever one Pocket Option answers on.
       body: JSON.stringify({action:'connect', session:session, uid:'', demo:true,
-                            via:'bookmarklet'})
+                            uids:uids, via:'bookmarklet'})
     });
     if (r.status === 401){
       say('The panel wants its password',

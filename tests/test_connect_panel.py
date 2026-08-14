@@ -151,7 +151,7 @@ def test_the_supplied_uid_is_saved_immediately_then_checked(panel):
     panel.command({"action": "connect", "session": GOOD, "uid": "555", "demo": True})
 
     assert _env(panel)["PO_UID"] == "555"
-    assert calls == [(GOOD, 555, True)]
+    assert calls == [(GOOD, 555, True, [])]
 
 
 def test_an_account_with_no_id_is_saved_in_a_form_that_survives_a_restart(panel):
@@ -293,7 +293,8 @@ def _hint(panel, monkeypatch, **body):
     seen = {}
     panel.auto_discover = True
     monkeypatch.setattr(panel, "_discover_async",
-                        lambda session, uid, demo: seen.update(uid=uid, demo=demo))
+                        lambda session, uid, demo, cands=None:
+                            seen.update(uid=uid, demo=demo, cands=cands))
     panel.command({"action": "connect", "session": GOOD, **body})
     return seen
 
@@ -340,3 +341,52 @@ def test_a_typed_id_is_still_saved_immediately(panel):
     # Someone who dug the id out of DevTools should not lose it to a restart.
     panel.command({"action": "connect", "session": GOOD, "uid": "777", "demo": True})
     assert _env(panel)["PO_UID"] == "777"
+
+
+# ------------------------- a file written by the old bug must heal itself
+def test_a_refused_id_is_cleared_so_the_next_attempt_starts_clean(panel):
+    """
+    His .env was left holding the REAL id with PO_DEMO=true — written by the
+    bug above. That pair claims to be the practice account, so the kind-matches
+    test in _connect is satisfied by it and hands the same doomed id straight
+    back to the search. Without this, the fix does not reach the one file that
+    needs it.
+    """
+    panel.config.po_uid, panel.config.po_demo = 138033625, True
+    panel._apply_discovery(_Found(138033625, demo=False, balance=0.52,
+                                  matches_request=False), GOOD, demo=True)
+    assert panel.config.po_uid == 0
+    assert _env(panel)["PO_UID"] == ""
+
+
+def test_clearing_the_id_leaves_the_cookie_and_the_demo_choice_alone(panel):
+    panel.config.po_uid, panel.config.po_demo = 138033625, True
+    panel.config.po_ssid = "a-cookie"
+    panel._apply_discovery(None, GOOD, demo=True)
+    assert panel.config.po_ssid == "a-cookie"
+    assert panel.config.po_demo is True
+
+
+def test_a_confirmed_id_is_never_cleared(panel):
+    panel.config.po_uid, panel.config.po_demo = 555, True
+    panel._apply_discovery(_Found(555, demo=True, balance=50.0), GOOD, demo=True)
+    assert panel.config.po_uid == 555
+
+
+# ---------------------- ids scraped off the Pocket Option page reach the search
+def test_scraped_ids_are_passed_to_the_account_search(panel, monkeypatch):
+    seen = _hint(panel, monkeypatch, uid="", demo=True,
+                 uids=["987654321", 555444333])
+    assert seen["cands"] == [987654321, 555444333]
+
+
+def test_junk_in_the_scraped_id_list_is_dropped(panel, monkeypatch):
+    """It arrives over HTTP and is about to be put into an auth frame."""
+    seen = _hint(panel, monkeypatch, uid="", demo=True,
+                 uids=["12", "not-a-number", None, "987654321", "987654321",
+                       "9" * 20, {"nested": 1}])
+    assert seen["cands"] == [987654321]
+
+
+def test_no_scraped_ids_is_not_an_error(panel, monkeypatch):
+    assert _hint(panel, monkeypatch, uid="", demo=True)["cands"] == []
