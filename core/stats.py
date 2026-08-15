@@ -13,9 +13,11 @@ coin flips could not have produced it by luck".
 Break-even sits comfortably inside that. The honest reading is "no idea yet" —
 but the screen said 53% in green next to "100 trades", which reads as proof.
 
-This is not a theoretical worry on this project. The client has already lost
-real money to a small sample read as a result, and the whole reason the bot is
-on a practice account is to stop that happening twice.
+This is not a theoretical worry on this project. A hundred trades at 53% has
+already been read here as "it works" — by the client, and once by me, when I
+quoted a 72.7% win rate that turned out to be eleven trades. The whole reason
+the bot is on a practice account is that nobody has yet produced a sample big
+enough to mean anything.
 
 The other half of the answer matters just as much: HOW MANY more trades would
 settle it. A thin edge is not just unproven, it is unprovable in any reasonable
