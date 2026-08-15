@@ -331,7 +331,8 @@ class WebInterface:
         # single worst step in setting this up, and a mismatched one is refused
         # in complete silence — so the panel works it out itself. On a thread,
         # because each combination takes a few seconds and the page must not hang.
-        self._discover_async(session, hint, demo, candidates)
+        self._discover_async(session, hint, demo, candidates,
+                             via="bookmarklet" if trusted else "typed")
         return result
 
     def _save_account(self, session: str, uid: int, demo: bool) -> dict:
@@ -386,12 +387,21 @@ class WebInterface:
                                        "account now — watch the badge at the top."}
 
     def _discover_async(self, session: str, uid: int, demo: bool,
-                        candidates: Optional[List[int]] = None) -> None:
+                        candidates: Optional[List[int]] = None,
+                        via: str = "") -> None:
         """Run the account search on its own thread, logging as it goes."""
         import threading
+        from .discover import _uids
 
         if not self.auto_discover:      # off in tests; this step talks to the network
             return
+
+        # How many REAL account ids this search will get to try. uid 0 is always
+        # in the list and is not one of them — it is the "maybe the cookie is
+        # enough on its own" long shot. The difference decides what a total
+        # failure is allowed to conclude, so it is worked out from the same
+        # function the search uses rather than re-derived here.
+        ids_tried = len([u for u in _uids(uid, candidates) if u])
 
         def work() -> None:
             import asyncio as _aio
@@ -404,7 +414,7 @@ class WebInterface:
             except Exception as exc:
                 self.log(f"Could not check the account: {type(exc).__name__}: {exc}")
                 found = None
-            self._apply_discovery(found, session, demo)
+            self._apply_discovery(found, session, demo, ids_tried, via)
 
         threading.Thread(target=work, daemon=True,
                          name="po-account-discovery").start()
@@ -428,7 +438,8 @@ class WebInterface:
                  "the next attempt will search from scratch instead of "
                  "repeating it.")
 
-    def _apply_discovery(self, found, session: str, demo: bool) -> None:
+    def _apply_discovery(self, found, session: str, demo: bool,
+                         ids_tried: int = 0, via: str = "") -> None:
         """
         Decide what to do with what the search came back with.
 
@@ -450,21 +461,56 @@ class WebInterface:
             self._forget_account_id()
 
         if found is None:
-            # Every combination refused means the cookie is dead — a wrong
-            # account id would have been fixed by one of the four attempts.
-            # Say that plainly instead of leaving a silent 'Connecting…'.
             # The length is safe to print and worth printing: a complete
             # ci_session is several hundred characters, so a suspiciously
             # short one that still passed the shape check narrows this from
             # "expired" to "half of it got copied". Never the value itself —
             # this feed is on screen and in the log file.
-            self.log(f"⚠️ Pocket Option refused every combination "
-                     f"(the cookie it tried was {len(session)} characters). "
-                     "That means the cookie itself is no longer valid, not "
-                     "that the account id is wrong. Log in to "
-                     "pocketoption.com, copy a FRESH ci_session cookie, "
-                     "paste it here — and do not log out afterwards, "
-                     "because logging out kills it.")
+            size = f"the cookie it tried was {len(session)} characters"
+
+            if ids_tried:
+                # A real account id was among the attempts and was refused
+                # alongside every other combination, so the cookie is the
+                # thing at fault. This is the only case that may say so.
+                self.log(f"⚠️ Pocket Option refused every combination "
+                         f"({size}). That means the cookie itself is no "
+                         "longer valid, not that the account id is wrong. "
+                         "Log in to pocketoption.com, copy a FRESH "
+                         "ci_session cookie, paste it here — and do not log "
+                         "out afterwards, because logging out kills it.")
+                return
+
+            # Nothing but uid 0 was ever tried, and uid 0 has never once been
+            # accepted by Pocket Option. So this run proves NOTHING about the
+            # cookie, and the message above used to claim it did: it told
+            # people to go and fetch a fresh cookie when the fresh one would
+            # fail in exactly the same way, because what is missing is the
+            # account id. Two different faults that produce an identical log
+            # must not share a conclusion.
+            #
+            # Which of the two it is depends on how the cookie arrived, and
+            # that is the only thing that separates them.
+            if via == "bookmarklet":
+                self.log(f"⚠️ Could not get in ({size}) — but this does not "
+                         "mean your cookie is bad. No account id was "
+                         "available to try, and Pocket Option has never "
+                         "accepted a login without one, so this attempt was "
+                         "never going to work either way. The bookmark could "
+                         "not find your account id on the Pocket Option page. "
+                         "It has switched on a listener there: go back to the "
+                         "Pocket Option tab, click the Demo/Real switch once "
+                         "(or just leave it open a minute), then click the "
+                         "bookmark again. That second click is the one that "
+                         "finds it.")
+            else:
+                self.log(f"⚠️ Could not get in ({size}) — but this does not "
+                         "mean your cookie is bad. A pasted cookie carries no "
+                         "account id, and Pocket Option has never accepted a "
+                         "login without one, so this attempt was never going "
+                         "to work either way. Use the blue bookmark button on "
+                         "this page instead of pasting: it reads the account "
+                         "id off the Pocket Option page as well as the "
+                         "cookie, which is the part that is missing here.")
             return
 
         if not found.matches_request:
@@ -1075,16 +1121,52 @@ const BOOKMARKLET =
   // include tokens and personal details, and keeps nothing but numbers in a
   // plausible id range. Nothing else is recorded, sent or logged.
   "var d={};" +
-  "var K=/uid|userid|user_id|account/i;" +
+  "var K=/uid|userid|user_id|account|profile/i;" +
   "function keep(x){var n=parseInt(x,10);" +
   "if(n>99999&&n<1e13&&String(n)===String(x).trim())d[n]=1}" +
-  "function walk(v,z){if(!v||typeof v!=='object'||z>4)return;" +
-  "for(var k in v){try{if(K.test(k))keep(v[k]);walk(v[k],z+1)}catch(e){}}}" +
+  // A visited set and a node budget, because this now walks `window` too. A
+  // live trading page has cyclic references everywhere (parent, ownerDocument,
+  // Vue's $root) and without both of these the bookmark locks the tab up.
+  "var seen=new Set();var budget=30000;" +
+  "function walk(v,z){if(!v||typeof v!=='object'||z>4||budget<0)return;" +
+  // Never descend into the DOM. window.document alone would drag in every node
+  // on the page, spend the whole budget and find nothing: ids live in the
+  // app's state, not its markup.
+  "if(v instanceof Node||v===window||seen.has(v))return;seen.add(v);" +
+  "for(var k in v){if(--budget<0)return;" +
+  "try{if(K.test(k))keep(v[k]);walk(v[k],z+1)}catch(e){}}}" +
   "[localStorage,sessionStorage].forEach(function(s){" +
   "for(var i=0;i<s.length;i++){try{var k=s.key(i),r=s.getItem(k);" +
   "if(K.test(k))keep(r);" +
   "if(r&&(r.charAt(0)==='{'||r.charAt(0)==='['))walk(JSON.parse(r),0)" +
   "}catch(e){}}});" +
+  // Their other cookies, and the app's own state on `window`. The first search
+  // read localStorage and sessionStorage only, found nothing at all on the
+  // real site, and the panel then blamed the cookie for it. A framework keeps
+  // the logged-in profile in memory — __NUXT__, a Vue store, whatever they use
+  // — and never has to write it down anywhere this could see.
+  "try{document.cookie.split('; ').forEach(function(p){var i=p.indexOf('=');" +
+  "if(i>0&&K.test(p.slice(0,i)))keep(decodeURIComponent(p.slice(i+1)))})}catch(e){}" +
+  "try{for(var g in window){try{if(K.test(g))keep(window[g]);" +
+  "walk(window[g],0)}catch(e){}}}catch(e){}" +
+  // And if none of that finds it: listen for it.
+  //
+  // Pocket Option's own page has to send the id — it is in the auth frame on
+  // their WebSocket, which is the one place it is guaranteed to exist. A
+  // bookmark cannot see frames sent before it ran, so this wraps `send` and
+  // writes what it catches into localStorage, where the scrape above finds it
+  // on the NEXT click. Any re-auth triggers it: switching Demo/Real, or just
+  // their socket reconnecting on its own after a minute.
+  //
+  // Only the digits of the id are stored. The frame also carries the session,
+  // and that is not written anywhere.
+  "try{if(!WebSocket.prototype.__po){var S=WebSocket.prototype.send;" +
+  "WebSocket.prototype.send=function(x){try{if(typeof x==='string'&&x.indexOf('uid')>=0){" +
+  "var m=x.match(/\"uid\"\\s*:\\s*\"?(\\d{5,13})/);" +
+  "var q=x.match(/\"isDemo\"\\s*:\\s*\"?(\\d)/);" +
+  "if(m)localStorage.setItem('pobot_account_'+(q&&q[1]==='1'?'demo':'real'),m[1])" +
+  "}}catch(e){}return S.apply(this,arguments)};" +
+  "WebSocket.prototype.__po=1}}catch(e){}" +
   // The value rides in the fragment, which no browser sends to a server. It
   // reaches the panel page in the tab and is posted from there.
   "location.href=" + JSON.stringify(location.origin + "/hook#") +
@@ -1534,10 +1616,17 @@ async function go(){
   // way to reach a demo account whose id we do not have is DevTools, which
   // cost this project two days. Integers only ever cross: the scrape reads
   // whole objects but keeps nothing but numbers.
-  const bar = raw.indexOf('|');
+  // Chrome leaves the '|' alone in a fragment (checked against a real browser
+  // run), but it is a character browsers are entitled to percent-encode and
+  // this one character is the whole difference between "your bookmark is out of
+  // date" and "your account id is not on the page" — two completely different
+  // instructions. Accept either form rather than bet the message on it.
+  const sep = /\||%7C/i.exec(raw);
+  const bar = sep ? sep.index : -1;
   const session = decodeURIComponent(bar === -1 ? raw : raw.slice(0, bar));
   const uids = bar === -1 ? [] :
-    raw.slice(bar + 1).split(',').filter(x => /^[0-9]{6,13}$/.test(x));
+    raw.slice(bar + sep[0].length).split(',')
+       .filter(x => /^[0-9]{6,13}$/.test(x));
   // The length is the one number worth showing. A whole cookie is several
   // hundred characters, so a short one says "half of it came through" rather
   // than "your login expired" — two failures that otherwise look identical.
@@ -1584,6 +1673,19 @@ async function go(){
           'the bot does not update a bookmark. Go back to the panel, make the ' +
           'bookmark again from the button there, delete the old one, and click ' +
           'the new one on pocketoption.com.', 'bad');
+    } else if (res.ok && uids.length === 0){
+      // Current bookmark, ran properly, and still found no account id on the
+      // page. Worth its own screen: the cookie is fine and the search that is
+      // about to run cannot succeed, and those two facts together look
+      // identical in the log to an expired cookie. It sent people off to fetch
+      // a fresh cookie that failed the same way.
+      say('Cookie received — but not your account id yet',
+          'Pocket Option needs both, and the id was not anywhere the bookmark ' +
+          'could read it. It has just switched on a listener on that page, so: ' +
+          'go back to the Pocket Option tab, click the Demo/Real switch once ' +
+          '(or leave the tab open for a minute), then click the bookmark again. ' +
+          'The second click is the one that finds it. Nothing is wrong with ' +
+          'your login.', 'bad');
     } else if (res.ok){
       say('Cookie accepted', (res.message || '') +
           ' Sending you back to the panel — watch the log at the bottom.', 'ok');

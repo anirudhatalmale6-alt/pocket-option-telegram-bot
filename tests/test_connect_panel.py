@@ -146,7 +146,7 @@ def test_the_supplied_uid_is_saved_immediately_then_checked(panel):
     # Saved first so a restart is never left with nothing, and verified after.
     calls = []
     panel.auto_discover = True
-    panel._discover_async = lambda *a: calls.append(a)
+    panel._discover_async = lambda *a, **k: calls.append(a)
 
     panel.command({"action": "connect", "session": GOOD, "uid": "555", "demo": True})
 
@@ -293,8 +293,8 @@ def _hint(panel, monkeypatch, **body):
     seen = {}
     panel.auto_discover = True
     monkeypatch.setattr(panel, "_discover_async",
-                        lambda session, uid, demo, cands=None:
-                            seen.update(uid=uid, demo=demo, cands=cands))
+                        lambda session, uid, demo, cands=None, via="":
+                            seen.update(uid=uid, demo=demo, cands=cands, via=via))
     panel.command({"action": "connect", "session": GOOD, **body})
     return seen
 
@@ -420,3 +420,63 @@ def test_typing_the_cookie_in_by_hand_is_not_called_an_old_bookmark(panel):
     panel.command({"action": "connect", "session": GOOD, "uid": "", "demo": True})
     said = " ".join(e["text"] for e in panel.state()["log"])
     assert "older version" not in said
+
+
+# ------------------- a total failure must not blame the cookie for a missing id
+#
+# From his log, 14 Aug, 8:15-8:17 PM:
+#
+#   Trying your practice (no account id)…
+#     refused — not the practice (no account id)
+#   Trying your real money (no account id)…
+#     refused — not the real money (no account id)
+#   ⚠️ Pocket Option refused every combination (the cookie it tried was 427
+#     characters). That means the cookie itself is no longer valid…
+#
+# The first two lines say what the last one denies. NO account id was tried at
+# all — only uid 0, which Pocket Option has never once accepted — so the run
+# proved nothing whatsoever about the cookie. He was sent to fetch a fresh one,
+# and a fresh one would have failed in exactly the same way.
+def _fail(panel, ids_tried, via):
+    panel._apply_discovery(None, GOOD, demo=True, ids_tried=ids_tried, via=via)
+    return " ".join(e["text"] for e in panel.state()["log"])
+
+
+def test_the_cookie_is_only_blamed_when_a_real_id_was_actually_tried(panel):
+    assert "no longer valid" in _fail(panel, ids_tried=1, via="bookmarklet")
+
+
+def test_a_failure_with_no_id_to_try_does_not_call_the_cookie_dead(panel):
+    said = _fail(panel, ids_tried=0, via="bookmarklet")
+    assert "no longer valid" not in said
+    assert "fresh" not in said.lower()          # nor send him after a new one
+
+
+def test_a_failure_with_no_id_says_the_cookie_is_probably_fine(panel):
+    said = _fail(panel, ids_tried=0, via="bookmarklet")
+    assert "does not mean your cookie is bad" in said
+
+
+def test_a_bookmark_that_found_nothing_is_told_to_click_again(panel):
+    """The listener it installed only pays off on a second click."""
+    said = _fail(panel, ids_tried=0, via="bookmarklet")
+    assert "again" in said and "Demo/Real" in said
+
+
+def test_a_pasted_cookie_that_found_nothing_is_pointed_at_the_bookmark(panel):
+    """Pasting cannot carry an id, so 'click it again' would be useless advice."""
+    said = _fail(panel, ids_tried=0, via="typed")
+    assert "bookmark" in said
+    assert "Demo/Real" not in said
+
+
+def test_the_length_is_still_reported_either_way(panel):
+    # The one number that separates "expired" from "half of it got copied".
+    for via in ("bookmarklet", "typed"):
+        assert f"{len(GOOD)} characters" in _fail(panel, 0, via)
+
+
+def test_how_the_cookie_arrived_reaches_the_search(panel, monkeypatch):
+    assert _hint(panel, monkeypatch, uid="", demo=True,
+                 via="bookmarklet")["via"] == "bookmarklet"
+    assert _hint(panel, monkeypatch, uid="", demo=True)["via"] == "typed"
