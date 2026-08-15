@@ -28,6 +28,7 @@ from typing import List, Optional
 
 from . import version
 from .config import BotConfig
+from .stats import verdict
 
 # Strategy modes offered in the dropdown, with a plain-English label so a
 # non-technical user can pick one without reading the source.
@@ -181,6 +182,13 @@ class WebInterface:
             # reads as "nearly there" when at an 80% payout it is a steady loss.
             "breakeven": 100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent else 100.0,
             "payout": c.payout_percent,
+            # Whether the record so far actually beats that line, or only looks
+            # like it. See core/stats.py — the panel used to call 100 trades
+            # enough, and 100 trades is not remotely enough at these margins.
+            "verdict": verdict(
+                r.wins if r else 0, r.losses if r else 0,
+                100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent
+                else 100.0),
             "trades": trades,
             "log": log,
         }
@@ -1435,17 +1443,37 @@ function render(s){
   // the sample is still too small to mean anything. A bare percentage after a
   // handful of trades is the easiest number in trading to fool yourself with.
   const decided = s.wins + s.losses;
+  const v = s.verdict || {state:'none'};
   const wr = document.getElementById('s-wr');
   wr.textContent = decided ? s.winrate.toFixed(0) + '%' : '—';
-  wr.className = 'v ' + (!decided ? '' : (s.winrate >= s.breakeven ? 'pos' : 'neg'));
+  // Green ONLY for a win rate that is provably ahead. It used to go green the
+  // moment the raw percentage cleared break-even, so 53% after 100 trades —
+  // which is statistically indistinguishable from a losing bot — showed as a
+  // pass. Colour is the part people read; it may not say more than the maths
+  // supports.
+  wr.className = 'v ' + (v.state === 'ahead' ? 'pos' :
+                         v.state === 'behind' ? 'neg' : '');
   const be = document.getElementById('s-be');
-  if (!decided) {
-    be.textContent = 'need ' + s.breakeven.toFixed(1) + '% to break even at ' + s.payout + '% payout';
-  } else if (decided < 100) {
-    be.textContent = 'need ' + s.breakeven.toFixed(1) + '% — only ' + decided +
-                     ' trades, too few to judge (100+ before it means anything)';
+  const need = 'need ' + s.breakeven.toFixed(1) + '% to break even at ' +
+               s.payout + '% payout';
+  if (v.state === 'none') {
+    be.textContent = need;
+  } else if (v.state === 'ahead') {
+    be.textContent = need + ' — ahead of it, and ' + v.n +
+                     ' trades is enough to say so (worst case ' + v.lo + '%)';
+  } else if (v.state === 'behind') {
+    be.textContent = need + ' — behind it after ' + v.n +
+                     ' trades (best case ' + v.hi + '%)';
   } else {
-    be.textContent = 'need ' + s.breakeven.toFixed(1) + '% to break even — ' + decided + ' trades';
+    // The usual state, and the one that must not read as encouraging. A
+    // straddling interval means the record so far is equally consistent with a
+    // winning bot and a losing one.
+    be.textContent = need + ' — TOO CLOSE TO CALL after ' + v.n +
+      ' trades. True rate is somewhere between ' + v.lo + '% and ' + v.hi +
+      '%, and break-even is inside that.' +
+      (v.need ? ' At this rate it would take about ' +
+                v.need.toLocaleString() + ' trades to prove an edge.'
+              : ' At this rate there is no edge to prove.');
   }
   document.getElementById('s-wl').textContent = s.wins + ' / ' + s.losses;
   const bal = document.getElementById('s-bal');
