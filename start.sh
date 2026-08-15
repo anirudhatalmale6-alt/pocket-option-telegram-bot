@@ -45,8 +45,7 @@ if ! "$PY" -c "import dotenv" >/dev/null 2>&1; then
     exit 1
 fi
 
-PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
-PORT=${PORT:-8080}
+. ./lib_port.sh              # PORT, port_state, listening (PY is already set)
 
 # Already up? Say so and stop. Starting a second copy would fail on the port
 # anyway, but the failure would arrive in the log file where nobody is looking.
@@ -61,17 +60,11 @@ fi
 
 # A stale pid file is normal — it outlives a crash or a reboot. Only the port
 # tells you whether something is actually listening.
-if ! "$PY" - "$PORT" <<'PYEOF' 2>/dev/null
-import socket, sys
-sock = socket.socket()
-try:
-    sock.bind(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    sock.close()
-PYEOF
-then
+#
+# `listening`, so an unreadable port does not block the start: refusing to run
+# because a probe broke is a worse failure than the one it guards against, and
+# the bind below would fail loudly anyway if the port really were taken.
+if listening; then
     echo "Something is already using port ${PORT} — almost certainly the bot," >&2
     echo "started from a terminal window that is still open somewhere." >&2
     echo >&2

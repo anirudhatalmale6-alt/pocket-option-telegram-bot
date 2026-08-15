@@ -19,28 +19,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
-PORT=${PORT:-8080}
+. ./lib_port.sh              # PORT, PY, port_state, listening
 URL="http://localhost:${PORT}"
-
-if [ -x .venv/bin/python ]; then
-    PY=.venv/bin/python
-else
-    PY=python3
-fi
-
-listening() {
-    ! "$PY" - "$PORT" <<'PYEOF' 2>/dev/null
-import socket, sys
-sock = socket.socket()
-try:
-    sock.bind(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    sock.close()
-PYEOF
-}
 
 # --paper unless a real session has been saved. Starting in live mode with no
 # account configured would only produce a wall of connection errors.
@@ -49,6 +29,10 @@ if grep -qE '^PO_(SESSION|SSID)=.+' .env 2>/dev/null; then
     MODE=
 fi
 
+# `listening`, not "not free". If the probe could not tell, start the bot: the
+# icon's whole job is to leave a panel running, and start.sh refuses to bind a
+# port that is genuinely taken anyway. Treating "I don't know" as "already
+# running" is how this printed "Already running." with nothing running.
 if listening; then
     echo "Already running."
 else

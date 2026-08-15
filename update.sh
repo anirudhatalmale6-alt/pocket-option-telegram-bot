@@ -19,6 +19,7 @@ set -euo pipefail
 main() {
 
 cd "$(dirname "$0")"
+HERE=$(pwd)
 
 BOLD=$(printf '\033[1m'); GREEN=$(printf '\033[32m'); RESET=$(printf '\033[0m')
 YELLOW=$(printf '\033[33m')   # `set -u` turns a missing one of these into a crash
@@ -43,27 +44,7 @@ if [ -x .venv/bin/python ]; then
     echo "${GREEN}  ok${RESET} dependencies fine"
 fi
 
-PORT=$(grep -E '^WEB_PORT=' .env 2>/dev/null | cut -d= -f2 | tr -d '[:space:]' || true)
-PORT=${PORT:-8080}
-
-if [ -x .venv/bin/python ]; then
-    PY=.venv/bin/python
-else
-    PY=python3
-fi
-
-listening() {
-    ! "$PY" - "$PORT" <<'PYEOF' 2>/dev/null
-import socket, sys
-sock = socket.socket()
-try:
-    sock.bind(("127.0.0.1", int(sys.argv[1])))
-except OSError:
-    sys.exit(1)
-finally:
-    sock.close()
-PYEOF
-}
+. ./lib_port.sh              # PORT, PY, port_state, listening
 
 # Pulling new code does nothing to a bot that is already running: Python loaded
 # the old files at startup and will keep using them. Refreshing the browser does
@@ -74,6 +55,47 @@ UNIT=pocket-option-bot.service
 systemd_running() {
     command -v systemctl >/dev/null 2>&1 &&
         systemctl --user is-active --quiet "$UNIT" 2>/dev/null
+}
+
+# The process ids of bots started from THIS directory, and nothing else.
+#
+# Two conditions, both required: the process must be running main.py AND its
+# working directory must be this install. Either alone is not enough —
+# `pgrep -f main.py` would match every copy of the bot on the machine plus
+# anything else of the user's with those five characters in its command line,
+# and a directory match alone would catch this script.
+#
+# Matched through /proc rather than by pattern because start.sh launches it as
+# `python main.py` (relative) while the systemd unit uses the absolute path, so
+# there is no one string that matches both. The working directory is the same
+# either way.
+# Matched with a bash `case`, NOT by piping into grep. `grep main.py` run from
+# this directory is itself a process whose working directory is this directory
+# and whose command line contains "main.py" — so the search matched its own
+# helper. Caught in testing. Harmless when it kills one, fatal to the check
+# afterwards: "has it stopped yet?" could never come back empty, so a bot that
+# had shut down perfectly would be reported as refusing to stop. Which is the
+# exact bug this whole change is about, reintroduced one layer down.
+# Compared argument by argument rather than by searching the command line as
+# one string. A substring search matches any process that merely MENTIONS
+# main.py — including a shell running a script with those characters in it, and
+# including this search's own helper processes. Requiring argv[0] to be a
+# python and an actual argument to be main.py cannot match those.
+ours() {
+    local pid argv a hit
+    for d in /proc/[0-9]*; do
+        pid=${d#/proc/}
+        [ "$pid" = "$$" ] && continue
+        [ "$(readlink -f "$d/cwd" 2>/dev/null)" = "$HERE" ] || continue
+        mapfile -d '' -t argv < "$d/cmdline" 2>/dev/null || continue
+        [ "${#argv[@]}" -ge 2 ] || continue
+        case "${argv[0]}" in *python*) ;; *) continue ;; esac
+        hit=no
+        for a in "${argv[@]:1}"; do
+            case "$a" in main.py|*/main.py) hit=yes ;; esac
+        done
+        if [ "$hit" = yes ]; then echo "$pid"; fi
+    done
 }
 
 # Wait for the port to actually come free. `kill` returning 0 only means the
@@ -112,16 +134,61 @@ elif listening; then
     # — by hand with run.sh, or by a service — survives it and stop.sh still
     # exits 0. Without this check the green "Done" below is simply false, and
     # the next report is "the update didn't change anything".
-    wait_until_free || STOPPED=no
+    if ! wait_until_free; then
+        # stop.sh could not reach it, so find it the other way: a process
+        # running THIS directory's main.py. Matched on the absolute path so it
+        # can only ever be this install — never another copy of the bot, and
+        # never anything else on the machine. Asked politely first; stop.sh
+        # already explains why a clean shutdown matters to the broker
+        # connection.
+        echo "    it is not the one in bot.pid — looking for it by name..."
+        PIDS=$(ours 2>/dev/null || true)
+        if [ -n "$PIDS" ]; then
+            kill $PIDS 2>/dev/null || true
+            wait_until_free || { kill -9 $PIDS 2>/dev/null || true; }
+        fi
+        wait_until_free || STOPPED=no
+    fi
+elif [ "$(port_state)" = unknown ]; then
+    # The port could not be read at all, so the socket cannot answer anything.
+    # Fall back to the process list, which does not depend on WEB_PORT parsing
+    # or on python being usable. Without this, an unreadable port would skip
+    # the stop entirely and start a second bot on top of the first.
+    if [ -n "$(ours 2>/dev/null || true)" ]; then
+        echo "${BOLD}==>${RESET} Stopping the old version..."
+        bash stop.sh >/dev/null 2>&1 || true
+        PIDS=$(ours 2>/dev/null || true)
+        if [ -n "$PIDS" ]; then
+            kill $PIDS 2>/dev/null || true
+            for _ in $(seq 1 20); do
+                [ -z "$(ours 2>/dev/null || true)" ] && break
+                sleep 0.5
+            done
+        fi
+        [ -z "$(ours 2>/dev/null || true)" ] || STOPPED=no
+    fi
 fi
 
 if [ "$STOPPED" = no ]; then
+    # Something really is holding the port. Do NOT start a second copy: two
+    # bots on one Pocket Option account is worse than an update that did not
+    # land, and this is the one case where stopping is the right answer.
+    #
+    # Note what this branch may NOT do any more, though. It used to be reached
+    # whenever the probe said "busy", and it exited here — which left NOTHING
+    # running and produced "the new code downloaded but the bot would not stop"
+    # followed straight away by "localhost can't be reached". The bot had
+    # stopped perfectly well; a browser tab still open on the panel had left
+    # the address in TIME_WAIT and the probe called that busy. Refusing to
+    # start was the only thing actually broken. The probe now asks the same
+    # question the bot's own socket asks, so reaching this line means a real
+    # process, not a ghost.
     cat <<EOF
 
-${YELLOW}${BOLD}The new code downloaded, but the running bot would not stop.${RESET}
+${YELLOW}${BOLD}The new code downloaded, but something is still using port ${PORT}.${RESET}
 
-Something is still using port ${PORT}, so the panel you see is the OLD version.
-I would rather say that than print "Done" over the top of it.
+I have not started the bot, because if that something IS the old bot then
+starting another would put two of them on your account at once.
 
 Close any terminal window that has the bot running in it and press Ctrl+C
 there, then run this again. If there is no such window, restart Linux:
