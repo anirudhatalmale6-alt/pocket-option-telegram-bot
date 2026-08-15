@@ -30,6 +30,7 @@ from .alligator_strategy import AlligatorStrategy
 from .rsi_strategy import RsiStrategy
 from .confluence_strategy import ConfluenceStrategy
 from .sr_strategy import SrStrategy
+from .ai_strategy import AiStrategy
 from . import plugins
 
 
@@ -63,10 +64,39 @@ def build_evaluator(config: BotConfig):
         config.sr.mode = "break" if mode == "sr_break" else "bounce"
         config.sr.fade = (mode == "sr_fade")
         return SrStrategy(config.sr)
+    if mode == "ai":
+        # The AI never runs alone. A cheap local strategy decides which candles
+        # are worth paying to ask about; without that the model is asked on
+        # every candle, which costs more per hour than the trading can make.
+        # See core/ai_strategy.py for the arithmetic.
+        gate = None
+        if config.ai.gate:
+            inner = BotConfig_replace_mode(config, config.ai.gate)
+            gate = build_evaluator(inner)
+        config.ai.breakeven = (100.0 * 100.0 / (100.0 + config.payout_percent)
+                               if config.payout_percent else 100.0)
+        return AiStrategy(config.ai, gate)
     if mode in ("linreg", "ema", "donchian"):
         config.trend.mode = mode
         return TrendStrategy(config.trend)
     return Strategy(config.strategy)  # default: pull-back
+
+
+def BotConfig_replace_mode(config: BotConfig, mode: str) -> BotConfig:
+    """
+    A shallow view of the config with a different strategy_mode.
+
+    Used to build the AI's gate by reusing build_evaluator rather than a second
+    switch statement that would drift out of step with the first one. `copy`
+    rather than `deepcopy` so the gate reads the same live settings objects the
+    panel edits — a gate frozen at start-up would ignore every later change.
+    ★ Guards against `gate: "ai"`, which would recurse until the stack blew.
+    """
+    import copy
+
+    view = copy.copy(config)
+    view.strategy_mode = "pullback" if mode == "ai" else mode
+    return view
 
 # A notifier is any async function taking a string (wired to Telegram/web in main).
 Notifier = Callable[[str], Awaitable[None]]
@@ -249,6 +279,43 @@ class Trader:
                 backoff = 2
                 await self.notify("Account details updated — reconnecting.")
 
+    # Times each pair should be looked at during one candle. Any lower and a
+    # close is noticed so late that the price has moved away from the one the
+    # signal was computed on; any higher and Pocket Option starts refusing a
+    # client that asks too often.
+    LOOKS_PER_CANDLE = 6
+
+    # Never poll faster than this, whatever the arithmetic says.
+    MIN_TICK = 0.15
+
+    def tick_seconds(self, pairs: int) -> float:
+        """
+        How long to wait between polls, given how many pairs are in rotation.
+
+        One pair per tick keeps the request rate flat, but it also means each
+        pair is only looked at every `pairs * tick` seconds — and THAT is the
+        number that matters, because it is how late an entry can be after the
+        candle it was decided on closed.
+
+        At the old fixed one-second tick that lag was fine on 60s candles (10
+        pairs -> 10s, a sixth of the bar) and bad on the 30s candles the client
+        asked for (10 pairs -> 10s, a THIRD of the bar, entered at a price the
+        signal never saw). So the tick shortens as pairs are added, keeping the
+        per-pair look rate roughly constant instead of the request rate.
+
+        A single pair is left exactly as it was: this must not quietly change
+        the behaviour of the setup that has been running all week.
+        """
+        cfg = self.config
+        if pairs <= 1:
+            return cfg.poll_interval
+        target = cfg.candle_timeframe / float(self.LOOKS_PER_CANDLE) / pairs
+        return max(self.MIN_TICK, min(cfg.poll_interval, target))
+
+    def look_interval(self, pairs: int) -> float:
+        """Seconds between two looks at the SAME pair — the lag that matters."""
+        return self.tick_seconds(pairs) * max(1, pairs)
+
     def _closed_candles(self, candles):
         """
         Drop the candle that is still being built.
@@ -326,6 +393,7 @@ class Trader:
             asset = watching[cursor % len(watching)]
             cursor += 1
             self.watching = watching
+            tick = self.tick_seconds(len(watching))
 
             candles = self._closed_candles(
                 await self.broker.get_candles(asset, cfg.candle_timeframe, 200)
@@ -350,7 +418,7 @@ class Trader:
                 )
                 if self.empty_by_asset[asset] in (10, 100, 1000):
                     await self.notify(f"⚠️ {self.last_reason}")
-                await asyncio.sleep(cfg.poll_interval)
+                await asyncio.sleep(tick)
                 continue
             self.empty_by_asset[asset] = 0
             self.empty_candles = 0
@@ -360,7 +428,7 @@ class Trader:
             # we have already ruled on.
             stamp = candles[-1].time
             if stamp == judged.get(asset):
-                await asyncio.sleep(cfg.poll_interval)
+                await asyncio.sleep(tick)
                 continue
             judged[asset] = stamp
 
@@ -372,7 +440,7 @@ class Trader:
                                 if len(watching) > 1 else signal.reason)
 
             if signal.direction is Direction.NONE:
-                await asyncio.sleep(cfg.poll_interval)
+                await asyncio.sleep(tick)
                 continue
 
             await self._execute(signal, asset)

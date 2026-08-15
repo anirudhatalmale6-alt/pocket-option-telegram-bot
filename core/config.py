@@ -22,6 +22,7 @@ from .alligator_strategy import AlligatorSettings
 from .rsi_strategy import RsiSettings
 from .confluence_strategy import ConfluenceSettings
 from .sr_strategy import SrSettings
+from .ai_strategy import AiSettings
 
 load_dotenv()  # read a local .env if present
 
@@ -151,6 +152,7 @@ class BotConfig:
     rsi: RsiSettings = field(default_factory=RsiSettings)
     confluence: ConfluenceSettings = field(default_factory=ConfluenceSettings)
     sr: SrSettings = field(default_factory=SrSettings)
+    ai: AiSettings = field(default_factory=AiSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
 
@@ -212,6 +214,13 @@ class BotConfig:
         cfg.poll_interval = _f("POLL_INTERVAL", cfg.poll_interval)
         cfg.payout_percent = _f("PAYOUT_PERCENT", cfg.payout_percent)
         cfg.strategy_mode = _s("STRATEGY_MODE", cfg.strategy_mode)
+        # The AI key is a password: it lives in .env on his own machine, never
+        # in the repo and never in a log. Read here so the panel can report
+        # whether one is set without ever echoing the value back out.
+        cfg.ai.api_key = _s("ANTHROPIC_API_KEY")
+        cfg.ai.model = _s("AI_MODEL", cfg.ai.model)
+        cfg.ai.gate = _s("AI_GATE", cfg.ai.gate)
+        cfg.ai.daily_budget_usd = _f("AI_DAILY_BUDGET", cfg.ai.daily_budget_usd)
         cfg.trend.mode = _s("TREND_MODE", cfg.trend.mode)
 
         cfg.risk.base_stake = _f("BASE_STAKE", cfg.risk.base_stake)

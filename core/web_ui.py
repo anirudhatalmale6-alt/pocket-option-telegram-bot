@@ -40,6 +40,7 @@ MAX_PAIRS = 12
 
 STRATEGY_CHOICES = [
     ("confluence", "Confluence — only trade when setups agree (recommended)"),
+    ("ai", "AI reads the setup — needs your own API key, costs per trade"),
     ("sr", "Support & resistance — bounce off the level"),
     ("sr_fade", "Support & resistance — REVERSED (bet the level breaks)"),
     ("sr_break", "Support & resistance — trade the breakout"),
@@ -631,6 +632,18 @@ class WebInterface:
                          f"your ${c.risk.daily_loss_cap:.0f} daily loss cap is reached "
                          f"roughly {len(pairs)}x sooner too, if the strategy is losing. "
                          f"Still one trade at a time; the pairs take turns.")
+                # How stale an entry can be. Taking turns means each pair waits
+                # its turn, and on short candles that wait is a real fraction of
+                # the bar — the entry price is not the close the signal was
+                # computed on. It belongs on screen next to the good news.
+                lag = self.trader.look_interval(len(pairs)) if self.trader else 0.0
+                if lag:
+                    share = 100.0 * lag / max(1, c.candle_timeframe)
+                    self.log(f"Each pair gets looked at every {lag:.0f}s, which is "
+                             f"{share:.0f}% of a {c.candle_timeframe}s candle — so an "
+                             f"entry can be up to {lag:.0f}s after the candle it was "
+                             f"decided on closed. Fewer pairs, or bigger candles, "
+                             f"tighten that.")
             return {"ok": True, "message": "Trading started."}
 
         if action == "stop":

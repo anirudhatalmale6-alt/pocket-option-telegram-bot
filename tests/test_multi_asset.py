@@ -314,3 +314,66 @@ def test_starting_on_one_pair_does_not_lecture_about_a_watchlist():
     web = _panel()
     web.command({"action": "start"})
     assert "loss cap is reached" not in " ".join(x["text"] for x in web._log)
+
+
+# ------------------------------------------------------- polling cadence
+def _tick_trader(pairs, timeframe, poll=1.0):
+    cfg = BotConfig()
+    cfg.candle_timeframe = timeframe
+    cfg.poll_interval = poll
+    return Trader(cfg, Recorder())
+
+
+def test_a_single_pair_polls_exactly_as_it_always_did():
+    """
+    The one-pair setup has been running all week. A change made for watchlists
+    must not quietly retune it.
+    """
+    t = _tick_trader(1, 60)
+    assert t.tick_seconds(1) == 1.0
+
+
+def test_adding_pairs_shortens_the_tick_so_each_pair_is_still_seen_often():
+    t = _tick_trader(10, 30)
+    # Ten pairs on 30s candles: a fixed 1s tick would look at each pair every
+    # 10s — a third of the bar — and enter at a price the signal never saw.
+    assert t.look_interval(10) <= 30 / 4.0
+
+
+def test_no_watchlist_size_lets_a_pair_go_unseen_for_most_of_a_candle():
+    """
+    The guarantee is a CEILING on how stale an entry can be, not a constant lag.
+
+    Written the other way first — "the look interval stays roughly the same as
+    pairs are added" — and that failed, correctly: on 60s candles a short
+    watchlist is already well inside the budget and there is no reason to spend
+    requests tightening it further. What must never happen is the lag growing
+    without limit as the list grows, which is what a fixed tick does.
+
+    The rate-limit floor is allowed to win; that is a deliberate trade, and the
+    combination it applies to (12 pairs on 5-second candles) is one nobody
+    should be running anyway.
+    """
+    for timeframe in (30, 60, 300):
+        for pairs in (2, 5, 10, 12):
+            t = _tick_trader(1, timeframe)
+            budget = timeframe / float(Trader.LOOKS_PER_CANDLE)
+            floor_bound = Trader.MIN_TICK * pairs
+            assert t.look_interval(pairs) <= max(budget, floor_bound) + 1e-9, (
+                timeframe, pairs, t.look_interval(pairs))
+
+
+def test_bigger_candles_allow_a_lazier_tick():
+    t = _tick_trader(1, 300)
+    assert t.tick_seconds(4) == 1.0          # capped by poll_interval, not by need
+
+
+def test_the_tick_never_hammers_pocket_option():
+    t = _tick_trader(1, 5)                   # the shortest candle size PO serves
+    assert t.tick_seconds(12) >= Trader.MIN_TICK
+
+
+def test_a_slow_poll_setting_is_still_respected_as_a_ceiling():
+    """poll_interval is the user's cap; the rotation may go under it, never over."""
+    t = _tick_trader(1, 300, poll=0.5)
+    assert t.tick_seconds(3) <= 0.5
