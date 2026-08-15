@@ -614,6 +614,28 @@ class WebInterface:
                 self.log("⚠ START on a LIVE account — real money is now at risk.")
             c.running = True
             self.log("▶ START pressed from the control panel.")
+            # Whose money is about to move — said at the moment of the press,
+            # not only on a badge in the header.
+            #
+            # The badge, the PRACTICE note and the balance tile all say this
+            # already, and it still was not enough: the client has twice now
+            # watched a practice run expecting his Pocket Option demo balance to
+            # move, and reported the bot as broken when it did not. A mode you
+            # have to go and check is a mode that gets assumed. The moment the
+            # button is pressed is the moment the assumption forms, so the
+            # answer belongs there — and it has to name the consequence
+            # ("your demo balance will NOT move"), not just the mode.
+            if self.paper:
+                self.log("This is PRACTICE — replayed history on this computer. "
+                         "Nothing is sent to Pocket Option and your DEMO BALANCE "
+                         "WILL NOT MOVE. To trade your real demo account, send "
+                         "your cookie with the blue bookmark above."
+                         + (f" (The cookie you sent was refused: {self.token_error})"
+                            if self.token_error else ""))
+            elif c.po_demo:
+                self.log("This is your Pocket Option DEMO account — real trades "
+                         "on their server, practice money. Your demo balance "
+                         "will move.")
             # Say what it is doing and roughly how long a quiet spell is normal.
             # Without this, a selective strategy looks identical to a dead bot.
             pairs = c.watched()

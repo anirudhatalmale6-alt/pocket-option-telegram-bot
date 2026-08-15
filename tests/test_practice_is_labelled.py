@@ -84,3 +84,63 @@ def test_the_connection_pill_checks_practice_before_connected():
     assert pill.index("'PRACTICE'", label) < pill.index("s.connected ?", label)
     # ...and the green class, which is what actually gets read at a glance.
     assert "s.connected && s.mode !== 'PRACTICE'" in pill
+
+
+# ------------------------------------------------- whose money, at the button
+def _panel(paper: bool, demo: bool = True, token_error: str = ""):
+    from core.config import BotConfig
+    from core.web_ui import WebInterface
+
+    cfg = BotConfig()
+    cfg.po_ssid = "" if paper else "x"
+    cfg.po_demo = demo
+    web = WebInterface(cfg, "127.0.0.1", 0, "")
+    web.paper = paper
+    web.token_error = token_error
+    return web
+
+
+def _log(web) -> str:
+    return " ".join(x["text"] for x in web._log)
+
+
+def test_starting_practice_says_the_demo_balance_will_not_move():
+    """
+    The badge, the practice note and the balance tile all said "practice" and
+    it still was not enough — the client watched a practice run twice expecting
+    his Pocket Option demo balance to move, and reported the bot as broken when
+    it did not. A mode you have to go and check is a mode that gets assumed.
+    The press is when the assumption forms, so the answer belongs there.
+    """
+    web = _panel(paper=True)
+    web.command({"action": "start"})
+    text = _log(web).upper()
+    assert "PRACTICE" in text
+    # Naming the consequence, not just the mode — "practice" is the word he has
+    # read every time and still misread.
+    assert "DEMO BALANCE WILL NOT MOVE" in text
+
+
+def test_starting_practice_names_a_refused_cookie_as_the_reason():
+    """
+    "It is on practice" and "it is on practice BECAUSE the cookie you sent was
+    refused" call for completely different actions from him.
+    """
+    web = _panel(paper=True, token_error="session expired")
+    web.command({"action": "start"})
+    assert "session expired" in _log(web)
+
+
+def test_starting_a_real_demo_says_the_balance_will_move():
+    web = _panel(paper=False, demo=True)
+    web.command({"action": "start"})
+    text = _log(web)
+    assert "DEMO" in text.upper()
+    assert "will move" in text
+    assert "WILL NOT MOVE" not in text.upper()
+
+
+def test_the_practice_warning_is_absent_on_a_real_account():
+    web = _panel(paper=False, demo=True)
+    web.command({"action": "start"})
+    assert "Nothing is sent to Pocket Option" not in _log(web)
