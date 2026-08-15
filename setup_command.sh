@@ -50,13 +50,27 @@ cat >> "$RC" <<EOF
 $BEGIN
 # Start the Pocket Option bot from anywhere. Practice by default: 'bot --live'
 # is the only way to reach a real account, so it can never happen by accident.
+#
+# 'bot update' is here for the same reason the whole function is: updating meant
+# 'cd ~/pocket-option-telegram-bot && bash update.sh', which is a folder name to
+# remember, a word ('bash') that is easy to leave off, and two failure messages
+# that describe bash's problem rather than the person's. Leaving off 'bash'
+# gives "command not found"; being in the wrong folder gives "No such file or
+# directory". Neither says "you are in the wrong place" or "put bash in front".
+# Reported three times now, so the command stops depending on either.
 bot() {
-    if [ "\${1:-}" = "--live" ]; then
-        shift
-        ( cd "$HERE" && bash run.sh "\$@" )
-    else
-        ( cd "$HERE" && bash run.sh --paper "\$@" )
-    fi
+    case "\${1:-}" in
+        update|--update)
+            ( cd "$HERE" && bash update.sh )
+            ;;
+        --live)
+            shift
+            ( cd "$HERE" && bash run.sh "\$@" )
+            ;;
+        *)
+            ( cd "$HERE" && bash run.sh --paper "\$@" )
+            ;;
+    esac
 }
 $END
 EOF
@@ -66,9 +80,11 @@ echo "Done. The command is installed."
 echo
 echo "Close this terminal window, open a new one, and type just:"
 echo
-echo "    bot"
+echo "    bot            - start it (practice mode)"
+echo "    bot update     - get the latest version"
+echo "    bot --live     - use the account in your .env"
 echo
-echo "That starts the bot in practice mode from wherever you are."
+echo "All three work from wherever you are — no folder to find first."
 echo "It does NOT work in this window — a terminal only reads the setting when"
 echo "it opens, so this one still knows nothing about it. Open a new one."
 echo

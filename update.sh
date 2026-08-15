@@ -248,6 +248,16 @@ if [ -f install_autostart.sh ]; then
     bash install_autostart.sh >/dev/null 2>&1 || true
 fi
 
+# And the `bot` shell shortcut, for the same reason: it is a block of code
+# living in ~/.bashrc, so it goes stale the moment this file learns a new
+# subcommand. Refreshing it here means `bot update` keeps working, and keeps
+# meaning the current thing, without anyone having to be told to re-run an
+# installer they have already forgotten about. Re-running replaces the marked
+# block rather than appending a second definition.
+if [ -f setup_command.sh ]; then
+    bash setup_command.sh >/dev/null 2>&1 || true
+fi
+
 }
 
 main "$@"
