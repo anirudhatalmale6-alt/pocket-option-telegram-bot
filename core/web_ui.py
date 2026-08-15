@@ -32,8 +32,17 @@ from .stats import verdict
 
 # Strategy modes offered in the dropdown, with a plain-English label so a
 # non-technical user can pick one without reading the source.
+# Most pairs the watchlist will accept. Not arbitrary: the loop checks one pair
+# per poll tick and holds one trade at a time, so beyond roughly this many the
+# extra pairs generate signals that are already stale by the time a slot frees
+# up — and Pocket Option throttles a client that reconnects too eagerly.
+MAX_PAIRS = 12
+
 STRATEGY_CHOICES = [
     ("confluence", "Confluence — only trade when setups agree (recommended)"),
+    ("sr", "Support & resistance — bounce off the level"),
+    ("sr_fade", "Support & resistance — REVERSED (bet the level breaks)"),
+    ("sr_break", "Support & resistance — trade the breakout"),
     ("custom", "Custom — your ZigZag + Stochastic + Keltner"),
     ("alligator", "Alligator — your Bill Williams + RSI"),
     ("rsi", "RSI — fast RSI reversal (for 30s candles)"),
@@ -129,6 +138,7 @@ class WebInterface:
                     "result": t.result,
                     "profit": t.profit,
                     "step": t.martingale_step,
+                    "asset": getattr(t, "asset", ""),
                 })
         with self._lock:
             log = [dict(x) for x in self._log[-60:][::-1]]
@@ -160,6 +170,9 @@ class WebInterface:
             "last_check": getattr(self.trader, "last_check_ts", 0.0),
             "last_reason": getattr(self.trader, "last_reason", ""),
             "asset": c.asset,
+            # Every pair in rotation, primary first. One entry means the bot
+            # behaves exactly as it always did.
+            "pairs": c.watched(),
             "expiry": c.expiry_seconds,
             "timeframe": c.candle_timeframe,
             "strategy": c.strategy_mode,
@@ -180,14 +193,22 @@ class WebInterface:
             "winrate": r.win_rate() if r else 0.0,
             # The number the win rate has to beat. Without it on screen, 48%
             # reads as "nearly there" when at an 80% payout it is a steady loss.
-            "breakeven": 100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent else 100.0,
+            #
+            # Judged against the WORST payout being watched, not the primary
+            # pair's. The win rate above pools trades from every pair in the
+            # rotation, and those pairs do not share a break-even — 92% needs
+            # 52.1%, 52% needs 65.8%. Scoring a pooled record against the
+            # friendliest line in the set would paint a losing week green.
+            # With one pair this is the pair's own payout, unchanged.
+            "breakeven": 100.0 * 100.0 / (100.0 + c.worst_payout()) if c.worst_payout() else 100.0,
             "payout": c.payout_percent,
+            "worst_payout": c.worst_payout(),
             # Whether the record so far actually beats that line, or only looks
             # like it. See core/stats.py — the panel used to call 100 trades
             # enough, and 100 trades is not remotely enough at these margins.
             "verdict": verdict(
                 r.wins if r else 0, r.losses if r else 0,
-                100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent
+                100.0 * 100.0 / (100.0 + c.worst_payout()) if c.worst_payout()
                 else 100.0),
             "trades": trades,
             "log": log,
@@ -569,7 +590,7 @@ class WebInterface:
                 return {"ok": False, "message": "No Pocket Option token set — cannot trade."}
             # Real money needs one deliberate extra press. Not paperwork: no
             # strategy in this bot has yet beaten its break-even line on real
-            # data (docs/RESULTS.md, 0 of 28 combinations), so pressing START on
+            # data (docs/RESULTS.md, 0 of 40 combinations), so pressing START on
             # a funded account is a decision to fund an experiment. The panel
             # sends confirm_live only after showing that in plain words.
             if self._is_live() and not body.get("confirm_live"):
@@ -579,8 +600,11 @@ class WebInterface:
                             f"This is your REAL money account.\n\n"
                             f"At a {c.payout_percent:.0f}% payout you must win "
                             f"{need:.1f}% of trades just to break even. No strategy "
-                            f"in this bot has yet proven it can do that — 0 of 28 "
-                            f"tested combinations showed a real edge (docs/RESULTS.md).\n\n"
+                            f"in this bot has yet proven it can do that — of 40 "
+                            f"tested combinations, none beats break-even at an 80% "
+                            f"payout and exactly one does at 92%, and that same "
+                            f"strategy wins 39% on the next timeframe up "
+                            f"(docs/RESULTS.md).\n\n"
                             f"Stake ${c.risk.base_stake:.2f}, stops after losing "
                             f"${c.risk.daily_loss_cap:.2f} today"
                             f"{', MARTINGALE IS ON' if c.martingale.enabled else ''}.\n\n"
@@ -591,9 +615,22 @@ class WebInterface:
             self.log("▶ START pressed from the control panel.")
             # Say what it is doing and roughly how long a quiet spell is normal.
             # Without this, a selective strategy looks identical to a dead bot.
-            self.log(f"Watching {c.asset} on {c.candle_timeframe}s candles with the "
+            pairs = c.watched()
+            where = (f"{len(pairs)} pairs ({', '.join(pairs)})" if len(pairs) > 1
+                     else c.asset)
+            self.log(f"Watching {where} on {c.candle_timeframe}s candles with the "
                      f"'{c.strategy_mode}' strategy. Trades appear below when a "
                      f"setup matches — a quiet spell is normal, not a fault.")
+            if len(pairs) > 1:
+                # The whole point of a watchlist is more trades per hour, and
+                # more trades per hour is also the fast route to the daily loss
+                # cap. Both halves of that belong on screen at the moment it
+                # starts, not just the half that sounds like progress.
+                self.log(f"That is about {len(pairs)}x as many trades per hour as one "
+                         f"pair, so a verdict arrives roughly {len(pairs)}x sooner — and "
+                         f"your ${c.risk.daily_loss_cap:.0f} daily loss cap is reached "
+                         f"roughly {len(pairs)}x sooner too, if the strategy is losing. "
+                         f"Still one trade at a time; the pairs take turns.")
             return {"ok": True, "message": "Trading started."}
 
         if action == "stop":
@@ -664,6 +701,48 @@ class WebInterface:
                     return {"ok": False, "message": "Asset cannot be empty."}
                 c.asset = asset
                 changed.append(f"asset {asset}")
+
+            if "pairs" in body:
+                # The watchlist, as typed or as filled in by the payout table.
+                # Accepts a list or a comma/space/newline separated string,
+                # because the box is a free-text field and a person separating
+                # things by whatever comes to hand is not making a mistake.
+                raw = body["pairs"]
+                if isinstance(raw, str):
+                    raw = raw.replace("\n", ",").replace(" ", ",").split(",")
+                names, seen = [], set()
+                for item in raw or []:
+                    name = str(item).strip()
+                    if name and name not in seen:
+                        seen.add(name)
+                        names.append(name)
+                if len(names) > MAX_PAIRS:
+                    return {"ok": False, "message": (
+                        f"That is {len(names)} pairs. The bot checks one pair per "
+                        f"second and holds one trade at a time, so past about "
+                        f"{MAX_PAIRS} it is queueing signals it cannot act on — "
+                        f"and Pocket Option starts refusing a connection that asks "
+                        f"too often. Trim the list to your best {MAX_PAIRS}.")}
+                # The first entry becomes the primary pair, so the box shows
+                # exactly what is being watched rather than the primary silently
+                # appearing on top of whatever was typed.
+                if names:
+                    c.asset = names[0]
+                    c.assets = names[1:]
+                else:
+                    c.assets = []
+                changed.append(f"watching {len(c.watched())} pair(s)")
+
+            if "payouts" in body:
+                # Sent alongside `pairs` when the list comes from the live payout
+                # table, so the break-even line can be worked out per pair
+                # instead of assuming they all pay the same. They do not.
+                try:
+                    c.asset_payouts = {str(k): float(v)
+                                       for k, v in dict(body["payouts"]).items()
+                                       if 1 <= float(v) <= 100}
+                except (TypeError, ValueError, AttributeError):
+                    return {"ok": False, "message": "Payout list was not readable."}
 
             if "payout" in body:
                 # Sent when a pair is picked from the live payout list, so the
@@ -1036,6 +1115,17 @@ PAGE = r"""<!doctype html>
       <div><label for="f-strategy">Strategy</label><select id="f-strategy"></select></div>
       <div><label for="f-asset">Asset</label><input id="f-asset" placeholder="EURUSD_otc">
         <div class="sub"><a href="#" onclick="loadPayouts();return false;">Show live payouts &rarr;</a></div></div>
+      <div style="grid-column:1/-1">
+        <label for="f-pairs">Watch several pairs at once</label>
+        <input id="f-pairs" placeholder="EURUSD_otc, GBPUSD_otc, AUDCAD_otc"
+               oninput="pairsDirty = true">
+        <div class="sub">Separate them with commas. The first one is the main pair.
+          Ten pairs means about ten times as many trades an hour, so you find out
+          ten times faster whether a strategy actually works — it does not make
+          the strategy any better. Still one trade at a time.
+          <a href="#" onclick="loadPayouts(true);return false;">Fill this from the
+          best-paying pairs &rarr;</a></div>
+      </div>
       <div><label for="f-stake">Stake per trade ($)</label><input id="f-stake" type="number" step="0.01" min="0.01"></div>
       <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div></div>
       <div><label for="f-timeframe">Candle size (seconds)</label>
@@ -1075,7 +1165,7 @@ PAGE = r"""<!doctype html>
     <h2>Trades</h2>
     <div class="scroll">
       <table>
-        <thead><tr><th>Time</th><th>Direction</th><th>Stake</th><th>Result</th><th>Profit</th></tr></thead>
+        <thead><tr><th>Time</th><th>Pair</th><th>Direction</th><th>Stake</th><th>Result</th><th>Profit</th></tr></thead>
         <tbody id="t-body"></tbody>
       </table>
     </div>
@@ -1232,6 +1322,7 @@ async function cmd(body){
     }
     toast(j.message, !j.ok);
     refresh();
+    return j;
   }catch(e){ toast('Connection to the bot was lost.', true); }
 }
 
@@ -1241,7 +1332,12 @@ function askPass(){
 }
 
 function saveSettings(){
-  cmd({
+  // The watchlist box wins over the single Asset box when it has anything in
+  // it, and its first entry becomes the main pair. Sending both and letting the
+  // server guess which one the user meant is how they end up trading a pair
+  // that is on neither list.
+  const typed = document.getElementById('f-pairs').value.trim();
+  const body = {
     action:'settings',
     strategy: document.getElementById('f-strategy').value,
     asset:    document.getElementById('f-asset').value,
@@ -1253,13 +1349,40 @@ function saveSettings(){
     mg_enabled: document.getElementById('f-mg').checked,
     mg_mult:  document.getElementById('f-mgmult').value,
     mg_steps: document.getElementById('f-mgsteps').value
-  });
+  };
+  if (typed){
+    body.pairs = typed;
+    body.asset = typed.split(',')[0].trim();
+    // Payouts learnt from the live table, for whichever of those pairs appeared
+    // in it. Without these the panel would score a mixed watchlist against one
+    // pair's break-even, which is the wrong line for every other pair.
+    const known = {};
+    (typed.replace(/\n/g, ',').split(',')).forEach(function(p){
+      p = p.trim();
+      if (p && payoutBySymbol[p] !== undefined) known[p] = payoutBySymbol[p];
+    });
+    if (Object.keys(known).length) body.payouts = known;
+  }
+  // Hand the box back to the poll only once the server has ACCEPTED the list.
+  // On a rejection — "that is 15 pairs, trim it to 12" — the list must stay on
+  // screen to be trimmed. Clearing the flag there would revert the box to the
+  // old pairs and throw away the work the message just asked them to fix.
+  cmd(body).then(function(res){ if (res && res.ok) pairsDirty = false; });
 }
 
 // ---- live payouts -------------------------------------------------------
 // The payout decides the win rate you must beat: 100 / (100 + payout). It
 // changes day to day, so it is fetched, never hard-coded into the page.
-async function loadPayouts(){
+// Symbol -> payout, remembered from the last table load so the watchlist can be
+// scored pair by pair instead of assuming they all pay the same. They do not:
+// the spread on any given day runs from about 92% down to 52%.
+var payoutBySymbol = {};
+
+// True while the watchlist box holds edits that have not been saved yet, so the
+// poll leaves it alone. Cleared once the server has accepted them.
+var pairsDirty = false;
+
+async function loadPayouts(forWatchlist){
   const box  = document.getElementById('payouts');
   const note = document.getElementById('payout-note');
   box.style.display = 'block';
@@ -1272,17 +1395,50 @@ async function loadPayouts(){
     if (!j.ok){ note.textContent = j.message || 'Could not load payouts.'; return; }
     const rows = j.assets || [];
     if (!rows.length){ note.textContent = 'No pairs are open right now.'; return; }
+    payoutBySymbol = {};
+    rows.forEach(function(a){ payoutBySymbol[a.symbol] = a.payout; });
     note.textContent = rows.length + ' pairs open. "Need" is the win rate that just ' +
                        'breaks even at that payout — lower is easier.';
     document.getElementById('payout-table').innerHTML =
-      '<tr><th>Payout</th><th>Need</th><th>Pair</th><th></th></tr>' +
+      '<tr><th>Payout</th><th>Need</th><th>Pair</th><th></th><th></th></tr>' +
       rows.map(a =>
         '<tr><td><b>' + a.payout + '%</b></td><td>' + a.breakeven.toFixed(1) + '%</td>' +
         '<td>' + a.name + '</td>' +
         '<td><button class="ghost" onclick="pickAsset(\'' + a.symbol + '\',' + a.payout +
-        ')">Use ' + a.symbol + '</button></td></tr>'
+        ')">Use ' + a.symbol + '</button></td>' +
+        '<td><button class="ghost" onclick="addPair(\'' + a.symbol +
+        '\')">+ watch</button></td></tr>'
       ).join('');
+    if (forWatchlist) fillWatchlist(rows);
   }catch(e){ note.textContent = 'Could not reach the bot.'; }
+}
+
+// Fill the watchlist with the best-paying open pairs.
+//
+// Sorted by payout because that is the setting with the largest effect on
+// whether a given win rate makes money: at 92% you need 52.1% wins, at 52% you
+// need 65.8%. Padding the list out with cheap pairs would collect trades faster
+// while making them harder to win, which is the opposite of the point.
+function fillWatchlist(rows){
+  const top = rows.filter(a => a.payout >= 80).slice(0, 10);
+  if (!top.length){
+    toast('No pair is paying 80% or better right now — nothing worth adding.', true);
+    return;
+  }
+  document.getElementById('f-pairs').value = top.map(a => a.symbol).join(', ');
+  pairsDirty = true;
+  toast('Filled in ' + top.length + ' pairs paying ' + top[top.length-1].payout +
+        '% or better. Press Save settings to use them.');
+}
+
+function addPair(symbol){
+  const box = document.getElementById('f-pairs');
+  const have = box.value.split(',').map(s => s.trim()).filter(Boolean);
+  if (have.indexOf(symbol) >= 0){ toast(symbol + ' is already on the list.'); return; }
+  have.push(symbol);
+  box.value = have.join(', ');
+  pairsDirty = true;
+  toast(symbol + ' added — now ' + have.length + '. Press Save settings to use them.');
 }
 
 function saveAccount(){
@@ -1357,7 +1513,8 @@ function render(s){
     lb2.style.display = 'block';
     lb2.innerHTML = '<b>REAL MONEY</b> — you need <b>' + s.breakeven.toFixed(1) +
       '%</b> wins at this ' + s.payout + '% payout just to break even. No strategy ' +
-      'here has proven it can do that yet (0 of 28 tested — see docs/RESULTS.md). ' +
+      'here has proven it can do that yet (0 of 40 tested at this payout — ' +
+      'see docs/RESULTS.md). ' +
       'Set PO_DEMO=true in your .env to practise instead.';
   } else {
     lb2.style.display = 'none';
@@ -1454,8 +1611,14 @@ function render(s){
   wr.className = 'v ' + (v.state === 'ahead' ? 'pos' :
                          v.state === 'behind' ? 'neg' : '');
   const be = document.getElementById('s-be');
-  const need = 'need ' + s.breakeven.toFixed(1) + '% to break even at ' +
-               s.payout + '% payout';
+  // With a watchlist the pairs do not share a break-even, and this win rate
+  // pools all of them — so it is scored against the HARDEST pair being watched
+  // and says so. Averaging the payouts would quietly move the pass mark down.
+  const multi = s.pairs && s.pairs.length > 1;
+  const bar = (s.worst_payout !== undefined ? s.worst_payout : s.payout);
+  const need = 'need ' + s.breakeven.toFixed(1) + '% to break even at ' + bar +
+               '% payout' + (multi ? ' (the worst of your ' + s.pairs.length +
+                                     ' pairs — this rate covers them all)' : '');
   if (v.state === 'none') {
     be.textContent = need;
   } else if (v.state === 'ahead') {
@@ -1516,6 +1679,16 @@ function render(s){
   }
   setField('f-strategy', s.strategy);
   setField('f-asset', s.asset);
+  // Only fill the watchlist box once more than one pair is actually being
+  // watched. Echoing the single pair into it would make the box look like a
+  // setting the user had chosen, and then the next Save would treat it as one.
+  // ...but not while the box holds unsaved edits. The "skip it while focused"
+  // rule that protects every other field is not enough here: the two buttons
+  // that fill this box (Fill from best-paying pairs, + watch) leave the focus
+  // elsewhere, so the next 2-second poll would silently wipe a list the user
+  // had just assembled and the page would look like it had ignored the click.
+  if (!pairsDirty)
+    setField('f-pairs', (s.pairs && s.pairs.length > 1) ? s.pairs.join(', ') : '');
   setField('f-stake', s.stake);
   setField('f-expiry', s.expiry);
   setField('f-timeframe', s.timeframe);
@@ -1530,6 +1703,7 @@ function render(s){
   tb.innerHTML = s.trades.map(t => `
     <tr>
       <td>${clock(t.ts)}</td>
+      <td>${escapeHtml(t.asset || s.asset || '')}</td>
       <td><span class="tag ${t.direction === 'call' ? 'call' : 'put'}">${t.direction === 'call' ? '▲ UP' : '▼ DOWN'}</span></td>
       <td>$${t.stake.toFixed(2)}</td>
       <td>${t.result === 'win' ? '✅ Win' : t.result === 'loss' ? '❌ Loss' : '➖ Draw'}</td>

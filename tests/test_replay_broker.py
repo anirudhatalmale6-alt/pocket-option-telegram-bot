@@ -114,10 +114,63 @@ def test_balance_tracks_the_payout():
 
 def test_running_off_the_end_wraps_instead_of_stopping():
     b = ReplayBroker(timeframe=3600)
-    b._cursor = len(b._series) - 6
+    # Positions are per pair now, so the end of the history has to be reached
+    # for a named pair rather than for the broker as a whole.
+    b._cursors["EURUSD_otc"] = len(b._series) - 6
     run(b.get_candles("EURUSD_otc", 3600, 10))
     assert b.wrapped == 1
-    assert b._cursor == b._warmup
+    assert b._cursors["EURUSD_otc"] == b._warmup
+
+
+def test_each_pair_replays_a_far_apart_stretch_of_history():
+    """
+    Otherwise a watchlist multiplies the trade count without multiplying the
+    evidence — ten pairs, ten times the trades, one market's worth of
+    information — while being sold on exactly the opposite.
+
+    ★ Asserting merely that the four pairs see DIFFERENT candles is not enough,
+    and this test said exactly that until it was checked against the old broker
+    and passed. A single shared position also hands out four different candles:
+    four CONSECUTIVE ones. The claim being made to the client is that the pairs
+    sample different market conditions, so the test has to be about distance.
+    """
+    b = ReplayBroker(timeframe=300)
+    pairs = ("EURUSD_otc", "GBPUSD_otc", "AUDCAD_otc", "USDCHF_otc")
+    at = {}
+    for asset in pairs:
+        run(b.get_candles(asset, 300, 20))
+        at[asset] = b._cursors[asset]
+    positions = sorted(at.values())
+    gaps = [b - a for a, b in zip(positions, positions[1:])]
+    assert min(gaps) > 100, f"pairs are replaying near-identical history: {at}"
+
+
+def test_the_stretch_a_pair_gets_does_not_depend_on_the_order_pairs_are_polled():
+    """
+    Which pair gets which history must come from its NAME, not from where it
+    happened to fall in the rotation. Otherwise adding a pair to the watchlist
+    silently rewrites what every other pair is being tested on, and no practice
+    run can be compared with the one before it.
+    """
+    a = ReplayBroker(timeframe=300)
+    for asset in ("EURUSD_otc", "GBPUSD_otc"):
+        run(a.get_candles(asset, 300, 5))
+
+    b = ReplayBroker(timeframe=300)
+    for asset in ("GBPUSD_otc", "EURUSD_otc"):      # same pairs, other order
+        run(b.get_candles(asset, 300, 5))
+
+    assert a._cursors["GBPUSD_otc"] == b._cursors["GBPUSD_otc"]
+    assert a._cursors["EURUSD_otc"] == b._cursors["EURUSD_otc"]
+
+
+def test_one_pair_trading_does_not_skip_history_for_the_others():
+    b = ReplayBroker(timeframe=300)
+    run(b.get_candles("EURUSD_otc", 300, 20))
+    run(b.get_candles("GBPUSD_otc", 300, 20))
+    before = b._cursors["GBPUSD_otc"]
+    run(b.place_trade("EURUSD_otc", 1.0, "call", 300))
+    assert b._cursors["GBPUSD_otc"] == before
 
 
 def test_changing_candle_size_live_rebuilds_the_series():

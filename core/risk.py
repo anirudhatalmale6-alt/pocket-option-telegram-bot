@@ -26,6 +26,10 @@ class TradeRecord:
     # Wall-clock time the trade settled. Used by the web dashboard to show a
     # timestamped trade log; defaults so existing callers stay unchanged.
     ts: float = field(default_factory=time.time)
+    # Which pair it was. Only interesting once more than one is being watched,
+    # but without it a losing streak on one bad pair is invisible inside a
+    # combined record — and finding that is half the point of watching several.
+    asset: str = ""
 
 
 @dataclass
@@ -61,14 +65,16 @@ class RiskManager:
         return True, "ok"
 
     # ----- record a settled trade ---------------------------------------
-    def record_result(self, direction: str, stake: float, result: str, profit: float) -> TradeRecord:
+    def record_result(self, direction: str, stake: float, result: str,
+                      profit: float, asset: str = "") -> TradeRecord:
         """
         Update counters and advance/reset martingale.
 
         `profit` is the net change to balance: e.g. on an 80% payout win of a $1
         stake, profit = +0.80; on a loss, profit = -1.00; on a draw, 0.
         """
-        rec = TradeRecord(direction, stake, result, profit, self._mg_step)
+        rec = TradeRecord(direction, stake, result, profit, self._mg_step,
+                          asset=asset)
         self.history.append(rec)
         self.daily_pnl += profit
 

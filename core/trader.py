@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import time
 import traceback
-from typing import Awaitable, Callable, Optional
+from typing import Awaitable, Callable, Dict, Optional
 
 from .broker import Broker
 from .config import BotConfig
@@ -29,6 +29,7 @@ from .custom_strategy import CustomStrategy
 from .alligator_strategy import AlligatorStrategy
 from .rsi_strategy import RsiStrategy
 from .confluence_strategy import ConfluenceStrategy
+from .sr_strategy import SrStrategy
 from . import plugins
 
 
@@ -54,6 +55,14 @@ def build_evaluator(config: BotConfig):
         return RsiStrategy(config.rsi)
     if mode == "confluence":
         return ConfluenceStrategy(config.confluence)
+    if mode in ("sr", "sr_break", "sr_fade"):
+        # One module, three readings of the same idea. Bet the level holds, bet
+        # it fails, or take the other side of the bounce — kept as separate
+        # dropdown entries because they are opposite trades, and a single
+        # "support & resistance" option would hide which one is running.
+        config.sr.mode = "break" if mode == "sr_break" else "bounce"
+        config.sr.fade = (mode == "sr_fade")
+        return SrStrategy(config.sr)
     if mode in ("linreg", "ema", "donchian"):
         config.trend.mode = mode
         return TrendStrategy(config.trend)
@@ -86,8 +95,11 @@ class Trader:
         self.checks = 0                # candles evaluated since start
         self.last_check_ts = 0.0       # when the newest candle was judged
         self.last_reason = ""          # why the last candle was not traded
+        self.last_asset = ""           # which pair that reason was about
+        self.watching: list = []       # the pairs currently in rotation
         self._balance_at = 0.0         # when the balance was last refreshed
         self.empty_candles = 0         # consecutive empty reads from the broker
+        self.empty_by_asset: Dict[str, int] = {}   # ...counted per pair
         # How long to let Pocket Option deliver the opening balance. Only ever
         # waited out when the figure is non-positive, so a healthy account pays
         # nothing for it. Instance attributes so tests need not sleep for real.
@@ -163,10 +175,11 @@ class Trader:
                 await broker.connect()
                 bal = await self._settled_balance(broker)
                 # Never claim a Pocket Option connection for a practice broker.
-                # Nothing here has touched Pocket Option, and the one time this
-                # project let practice read like the real thing it cost him $200.
-                # The balance TILE already says PRETEND; the log said the
-                # opposite three lines below it.
+                # Nothing here has touched Pocket Option. The one time this
+                # project let practice read like the real thing, the client
+                # spent an hour watching a simulated $997.20 believing it was
+                # his own account — the balance TILE said PRETEND while the log
+                # said the opposite three lines below it.
                 practice = getattr(broker, "is_practice", False)
                 self._status(True, bal)
                 if practice:
@@ -255,9 +268,18 @@ class Trader:
         self.risk.risk = cfg.risk
         self.risk.martingale = cfg.martingale
         active_mode = cfg.strategy_mode
-        # Timestamp of the last candle we already made a decision on, so one
-        # candle produces at most one entry no matter how often we poll.
-        judged: Optional[float] = None
+        # Timestamp of the last candle we already made a decision on, PER PAIR,
+        # so one candle produces at most one entry no matter how often we poll.
+        # Keyed by asset: a shared timestamp would let whichever pair was polled
+        # first silence all the others for that minute, and the bug would look
+        # like "the extra pairs never trade" rather than like a bug.
+        judged: Dict[str, Optional[float]] = {}
+        # Round-robin cursor over the watchlist. One pair is checked per tick
+        # rather than all of them, which keeps the request rate flat however
+        # many pairs are being watched — Pocket Option starts refusing
+        # connections when asked too often, and ten pairs polled every second
+        # would be ten times the traffic of the version that already worked.
+        cursor = 0
 
         while not self._stop:
             # Hand control back to run() so it can close this account's socket
@@ -300,63 +322,79 @@ class Trader:
                 await asyncio.sleep(cfg.poll_interval)
                 continue
 
+            watching = cfg.watched()
+            asset = watching[cursor % len(watching)]
+            cursor += 1
+            self.watching = watching
+
             candles = self._closed_candles(
-                await self.broker.get_candles(cfg.asset, cfg.candle_timeframe, 200)
+                await self.broker.get_candles(asset, cfg.candle_timeframe, 200)
             )
             if not candles:
                 # No price data is a completely different problem from "no setup
                 # matched", and on a blank screen the two look identical. Say
                 # which one it is, naming the asset — a typo'd or closed pair is
                 # the usual cause, and neither announces itself.
-                self.empty_candles += 1
+                #
+                # Counted per pair, not globally: with a watchlist, one dead pair
+                # among nine healthy ones must not be able to raise an alarm
+                # that reads as though the whole feed is down, and nine healthy
+                # ones must not reset the counter and hide the dead one forever.
+                self.empty_by_asset[asset] = self.empty_by_asset.get(asset, 0) + 1
+                self.empty_candles = self.empty_by_asset[asset]
                 self.last_check_ts = time.time()
                 self.last_reason = (
-                    f"no price data coming back for '{cfg.asset}' at "
+                    f"no price data coming back for '{asset}' at "
                     f"{cfg.candle_timeframe}s — check the asset name is right "
                     f"and that the pair is open (use Show live payouts)"
                 )
-                if self.empty_candles in (10, 100, 1000):
+                if self.empty_by_asset[asset] in (10, 100, 1000):
                     await self.notify(f"⚠️ {self.last_reason}")
                 await asyncio.sleep(cfg.poll_interval)
                 continue
+            self.empty_by_asset[asset] = 0
             self.empty_candles = 0
 
             # Act once per candle, on the close. Polling faster than the candle
             # only makes us notice the close sooner; it must not re-judge a bar
             # we have already ruled on.
             stamp = candles[-1].time
-            if stamp == judged:
+            if stamp == judged.get(asset):
                 await asyncio.sleep(cfg.poll_interval)
                 continue
-            judged = stamp
+            judged[asset] = stamp
 
             signal = self.strategy.evaluate(candles)
             self.checks += 1
             self.last_check_ts = time.time()
-            self.last_reason = signal.reason
+            self.last_asset = asset
+            self.last_reason = (f"{asset}: {signal.reason}"
+                                if len(watching) > 1 else signal.reason)
 
             if signal.direction is Direction.NONE:
                 await asyncio.sleep(cfg.poll_interval)
                 continue
 
-            await self._execute(signal)
+            await self._execute(signal, asset)
 
     # -------------------------------------------------------------- execute
-    async def _execute(self, signal) -> None:
+    async def _execute(self, signal, asset: Optional[str] = None) -> None:
         cfg = self.config
+        asset = asset or cfg.asset
         stake = self.risk.next_stake()
         step = self.risk.martingale_step
         self._active = True
         try:
             step_txt = f" (martingale step {step})" if step else ""
             await self.notify(
-                f"📈 ENTRY {signal.direction.value.upper()} {cfg.asset} "
+                f"📈 ENTRY {signal.direction.value.upper()} {asset} "
                 f"stake {stake:.2f} exp {cfg.expiry_seconds}s{step_txt}\n{signal.reason}"
             )
             result = await self.broker.place_trade(
-                cfg.asset, stake, signal.direction.value, cfg.expiry_seconds
+                asset, stake, signal.direction.value, cfg.expiry_seconds
             )
-            self.risk.record_result(result.direction, result.amount, result.result, result.profit)
+            self.risk.record_result(result.direction, result.amount, result.result,
+                                    result.profit, asset)
 
             icon = {"win": "✅", "loss": "❌", "draw": "➖"}.get(result.result, "•")
             await self.notify(

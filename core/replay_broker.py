@@ -24,6 +24,21 @@ where the data is real, and says so when it has rounded your setting up.
 And even at its best this is interbank EUR/USD, while Pocket Option's OTC pairs
 are synthetic and behave differently. This is a rehearsal on real ground, not a
 forecast. The only honest read on OTC performance is your own demo account.
+
+Several pairs at once
+---------------------
+There is only one instrument in the shipped data, so a watchlist in practice
+mode cannot replay four genuinely different markets. What it does instead is
+give each pair its own position in the history, far apart from the others, so
+four pairs replay four different WEEKS of real EUR/USD rather than four copies
+of the same one.
+
+That distinction is the whole point. With a single shared position the pairs
+would hand the strategy consecutive slices of one series, and the trade count
+would rise without the evidence rising with it — ten pairs, ten times the
+trades, and still one market's worth of information. Watching several pairs is
+sold on giving a verdict sooner; a practice mode that inflated the count without
+inflating the evidence would be quietly lying about exactly that.
 """
 
 from __future__ import annotations
@@ -144,7 +159,33 @@ class ReplayBroker(Broker):
             series, factor = list(base), 1
         self._series = series
         self._timeframe = max(src, factor * src)
+        # Positions are per pair and are rebuilt lazily on first use, so a
+        # timeframe change cannot leave one pair reading an index that belongs
+        # to a series of a different length.
+        self._cursors: Dict[str, int] = {}
         self._cursor = min(self._warmup, len(self._series) - 10)
+
+    def _start_for(self, asset: str) -> int:
+        """
+        Where in the history this pair begins.
+
+        Spread deterministically by name across the usable span, so the pairs in
+        a watchlist replay different stretches of the market and each restart
+        replays the same ones. crc32 rather than hash(): Python randomises hash()
+        per process, which would make a practice run unreproducible and every
+        comparison between two runs meaningless.
+        """
+        import zlib
+
+        usable = len(self._series) - self._warmup - 10
+        if usable <= 1:
+            return self._warmup
+        return self._warmup + zlib.crc32(asset.encode("utf-8")) % usable
+
+    def _at(self, asset: str) -> int:
+        if asset not in self._cursors:
+            self._cursors[asset] = self._start_for(asset)
+        return self._cursors[asset]
 
     @property
     def effective_timeframe(self) -> int:
@@ -165,11 +206,13 @@ class ReplayBroker(Broker):
     async def get_candles(self, asset: str, timeframe: int, count: int) -> List[Candle]:
         if timeframe != self.requested_timeframe:
             self._retimeframe(timeframe)      # panel changed candle size live
-        self._cursor += 1
-        if self._cursor >= len(self._series) - 5:
-            self._cursor = self._warmup
+        pos = self._at(asset) + 1
+        if pos >= len(self._series) - 5:
+            pos = self._warmup
             self.wrapped += 1
-        return self._series[max(0, self._cursor - count):self._cursor]
+        self._cursors[asset] = pos
+        self._cursor = pos                    # the last pair looked at
+        return self._series[max(0, pos - count):pos]
 
     def _retimeframe(self, timeframe: int) -> None:
         """set_timeframe() while keeping roughly our place in history."""
@@ -183,7 +226,7 @@ class ReplayBroker(Broker):
 
     async def place_trade(self, asset: str, amount: float, direction: str,
                           expiry_seconds: int) -> TradeResult:
-        entry_idx = min(self._cursor, len(self._series) - 1)
+        entry_idx = min(self._at(asset), len(self._series) - 1)
         entry = self._series[entry_idx].close
         # How many replayed candles the option spans, at least one.
         span = max(1, round(expiry_seconds / self._timeframe))
@@ -199,6 +242,9 @@ class ReplayBroker(Broker):
             result, profit = "loss", -amount
 
         # Do not replay the same stretch of history twice: jump past the expiry.
+        # Only for THIS pair — moving every pair on because one of them traded
+        # would skip history none of the others had seen.
+        self._cursors[asset] = exit_idx
         self._cursor = exit_idx
         self._balance += profit
         return TradeResult(f"replay-{entry_idx}", direction, amount, result, profit)

@@ -37,6 +37,7 @@ from core.alligator_strategy import AlligatorSettings, AlligatorStrategy
 from core.confluence_strategy import ConfluenceSettings, ConfluenceStrategy
 from core.custom_strategy import CustomSettings, CustomStrategy
 from core.rsi_strategy import RsiSettings, RsiStrategy
+from core.sr_strategy import SrSettings, SrStrategy
 from core.strategy import Candle, Direction, Strategy, StrategySettings
 from core.trend_strategy import TrendSettings, TrendStrategy
 
@@ -58,6 +59,11 @@ STRATEGIES: Dict[str, Callable[[], object]] = {
     "custom": lambda: CustomStrategy(CustomSettings(fade=True)),
     "alligator": lambda: AlligatorStrategy(AlligatorSettings()),
     "rsi": lambda: RsiStrategy(RsiSettings()),
+    # The client's own idea, both readings of it. They are opposite trades, so
+    # they are listed separately rather than one being picked for him.
+    "sr_bounce": lambda: SrStrategy(SrSettings(mode="bounce")),
+    "sr_break": lambda: SrStrategy(SrSettings(mode="break")),
+    "sr_fade": lambda: SrStrategy(SrSettings(mode="bounce", fade=True)),
     "pullback": lambda: Strategy(StrategySettings(
         require_both=False, ema_fast=5, ema_slow=20,
         rsi_oversold=40, rsi_overbought=60,

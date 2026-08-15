@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field, asdict
-from typing import Optional
+from typing import Dict, List, Optional
 
 from dotenv import load_dotenv
 
@@ -21,6 +21,7 @@ from .custom_strategy import CustomSettings
 from .alligator_strategy import AlligatorSettings
 from .rsi_strategy import RsiSettings
 from .confluence_strategy import ConfluenceSettings
+from .sr_strategy import SrSettings
 
 load_dotenv()  # read a local .env if present
 
@@ -93,6 +94,23 @@ class BotConfig:
     asset: str = "EURUSD_otc"          # default traded asset
     expiry_seconds: int = 60           # binary expiry (60 = 1m). Client range 3m..1h ok.
 
+    # Extra pairs to watch alongside `asset`. Empty means "just the one".
+    #
+    # This is the only lever that changes how FAST you find out whether a
+    # strategy works, as opposed to what it does. A strategy firing on 7% of
+    # candles gives about four trades an hour on one pair; the same strategy
+    # across ten pairs gives about forty, so a verdict that would have taken
+    # three months arrives in ten days. It does not improve the strategy by one
+    # decimal point — it only shortens the wait for the truth.
+    assets: List[str] = field(default_factory=list)
+
+    # Payout per watched pair, learnt when pairs are picked from the live table.
+    # Kept because the pairs in a watchlist do NOT share a break-even: at 92% you
+    # need 52.1% wins, at 52% you need 65.8%. One win-rate figure spanning both
+    # is meaningless, so the panel judges the record against the WORST pair being
+    # watched rather than quietly averaging them.
+    asset_payouts: Dict[str, float] = field(default_factory=dict)
+
     # --- Telegram (optional) ---
     # Leave the token blank to run without Telegram entirely; the browser
     # control panel below is a complete replacement for it.
@@ -123,6 +141,7 @@ class BotConfig:
     #   "alligator" -> client's Bill Williams Alligator + RSI strategy
     #   "rsi" -> simple fast RSI reversal (RSI 10, for 30s candles / 1-2m expiry)
     #   "confluence" -> trade only when multiple best strategies agree (higher WR)
+    #   "sr" / "sr_break" / "sr_fade" -> support & resistance (core/sr_strategy.py)
     strategy_mode: str = "pullback"
 
     strategy: StrategySettings = field(default_factory=StrategySettings)
@@ -131,11 +150,42 @@ class BotConfig:
     alligator: AlligatorSettings = field(default_factory=AlligatorSettings)
     rsi: RsiSettings = field(default_factory=RsiSettings)
     confluence: ConfluenceSettings = field(default_factory=ConfluenceSettings)
+    sr: SrSettings = field(default_factory=SrSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
 
     # Master run switch, toggled by /start and /stop from Telegram.
     running: bool = False
+
+    def watched(self) -> List[str]:
+        """
+        Every pair the bot should be watching, in order, without duplicates.
+
+        `asset` is always first and always present. Single-asset behaviour is
+        therefore exactly what it was before the watchlist existed — an empty
+        list cannot accidentally mean "watch nothing", which would look
+        identical to a dead connection on the panel.
+        """
+        out = [self.asset] if self.asset else []
+        for a in self.assets:
+            if a and a not in out:
+                out.append(a)
+        return out
+
+    def worst_payout(self) -> float:
+        """
+        The lowest payout among the pairs being watched, defaulting to the
+        configured one for any pair whose payout we were never told.
+
+        Deliberately the worst rather than the average. The win rate on screen
+        pools trades from every pair, so the only break-even line it can be
+        judged against honestly is the hardest one in the set. An average would
+        mark a losing session as a winning one whenever the cheap pairs traded
+        more than the generous ones.
+        """
+        rates = [self.asset_payouts.get(a, self.payout_percent)
+                 for a in self.watched()]
+        return min(rates) if rates else self.payout_percent
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -146,6 +196,8 @@ class BotConfig:
         cfg.po_uid = _i("PO_UID", 0)
         cfg.po_demo = _b("PO_DEMO", True)
         cfg.asset = _s("PO_ASSET", cfg.asset)
+        # Comma-separated, e.g. PO_ASSETS=EURUSD_otc,GBPUSD_otc,AUDCAD_otc
+        cfg.assets = [a.strip() for a in _s("PO_ASSETS").split(",") if a.strip()]
         cfg.expiry_seconds = _i("PO_EXPIRY_SECONDS", cfg.expiry_seconds)
 
         cfg.telegram_token = _s("TELEGRAM_TOKEN")

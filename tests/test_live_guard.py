@@ -1,11 +1,12 @@
 """
 The real-money guard on the control panel's START button.
 
-Context, because it explains why this is worth testing at all: the client ran
-this bot on a funded account and lost $200 while no strategy in the project had
-yet beaten its break-even line on real data (docs/RESULTS.md — 0 of 28
-combinations). Practice, demo and live all looked and felt identical at the
-moment of pressing START. That is a defect in the panel, not in his judgement.
+Context, because it explains why this is worth testing at all: practice, demo
+and live all looked and felt identical at the moment of pressing START, while no
+strategy in the project had beaten its break-even line on real data
+(docs/RESULTS.md). A green button that spends real money must not be the same
+green button that spends pretend money — and on this project the client has
+already, once, watched a simulated balance believing it was his own account.
 
 So: starting a LIVE account takes one extra, informed press. Practice and demo
 are unchanged — friction there would just teach him to click through it.
