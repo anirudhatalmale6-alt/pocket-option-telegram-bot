@@ -382,6 +382,23 @@ class WebInterface:
                              via="bookmarklet" if trusted else "typed")
         return result
 
+    def page_html(self) -> str:
+        """
+        The panel, stamped with the version that served it.
+
+        A tab left open across an update keeps the HTML — and therefore the
+        JavaScript — it was given hours ago, while /api/state answers from the
+        new process. Everything on the page then looks updated because the
+        NUMBERS are current, and the code around them is not.
+
+        That is not hypothetical: it cost this client an afternoon. He updated,
+        dragged the "Send PO cookie to bot" button from a tab that predated the
+        update, and got a bookmark built from the old JavaScript — which then
+        failed in exactly the way the update had just fixed. He did every step
+        right. The page handed him the wrong button.
+        """
+        return PAGE.replace("__BUILD__", version.RUNNING or "")
+
     def late_uid(self, uid: int, demo: bool) -> str:
         """
         An account id the listener on the Pocket Option page caught, after the
@@ -935,7 +952,8 @@ class WebInterface:
             def do_GET(self):
                 path = self.path.split("?")[0]
                 if path == "/":
-                    self._send(200, PAGE.encode(), "text/html; charset=utf-8")
+                    self._send(200, iface.page_html().encode(),
+                               "text/html; charset=utf-8")
                 elif path == "/hook":
                     # Where the bookmarklet lands. Unauthenticated on purpose:
                     # it serves a page, and the page does the authenticated POST
@@ -1121,6 +1139,13 @@ PAGE = r"""<!doctype html>
   #stalebar b{color:#fff}
   #stalebar code{background:rgba(0,0,0,.35);padding:1px 6px;border-radius:5px;
                  font:13px ui-monospace,SFMono-Regular,Menlo,monospace;color:#fff}
+  #stalebar button{background:#1d2430;border:1px solid rgba(245,158,11,.6);
+                   color:#fde68a;border-radius:8px;padding:7px 14px;cursor:pointer;
+                   font-size:14px}
+  .warn{background:rgba(245,158,11,.14);border:1px solid rgba(245,158,11,.6);
+        border-radius:8px;padding:8px 11px;margin:8px 0 0;font-size:13.5px;
+        line-height:1.5;color:#fde68a}
+  .warn b{color:#fff}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:16px;margin-bottom:16px}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;
@@ -1222,6 +1247,10 @@ PAGE = r"""<!doctype html>
       <li>Press <b>Ctrl+Shift+B</b> to show Chrome's bookmarks bar.</li>
       <li>Drag this button up onto that bar:
         <a id="bm-link" class="bmk" href="#" onclick="bmClick(event)">Send PO cookie to bot</a>
+        <div id="bm-stale" class="warn" style="display:none">
+          Don't drag it yet — this page is older than the bot, so this button is
+          the previous version's. Press <b>Ctrl+R</b> to reload first.
+        </div>
         <div class="sub">If there is already one there from before, delete it.
           A bookmark is a copy taken the day you made it, so an old one keeps
           working the old way however many times the bot is updated.</div></li>
@@ -1371,6 +1400,12 @@ PAGE = r"""<!doctype html>
   <div><button id="toastx" onclick="hideToast()">Got it</button></div></div>
 
 <script>
+// The version of the bot that served THIS page, stamped in at the time. It is
+// compared against the version answering /api/state on every poll: when they
+// differ, this tab is older than the bot and everything in it — the drag-to-
+// bookmark button above all — is out of date. See the stale-page banner below.
+const PAGE_VERSION = '__BUILD__';
+
 // Password is only needed if the server was started with one. It is kept in
 // this browser only (localStorage) and sent as a header on every request.
 let pass = localStorage.getItem('pobot_pass') || '';
@@ -1868,7 +1903,23 @@ function render(s){
   // Updating the files does not update a bot that is already running. Without
   // this, a fixed bug still looks unfixed and the page gives no clue why.
   const sb = document.getElementById('stalebar');
-  if (s.stale_code){
+  // This tab is older than the bot answering it. Checked FIRST, because the
+  // fix is different and this is the one that hands out a broken bookmark: the
+  // blue button's address was built by the JavaScript in this page, so a tab
+  // left open across an update gives you the previous version's bookmark and
+  // nothing anywhere says so. He did every step right and it still failed.
+  const pageStale = PAGE_VERSION && s.version && PAGE_VERSION !== s.version;
+  document.getElementById('bm-stale').style.display = pageStale ? 'block' : 'none';
+  if (pageStale){
+    sb.style.display = 'block';
+    sb.innerHTML = '<b>This page is older than the bot.</b> The bot has been ' +
+      'updated since this tab was opened (it is on ' + s.version + ', this page ' +
+      'came from ' + PAGE_VERSION + '), so everything on it — including the blue ' +
+      '"Send PO cookie to bot" button — is the previous version. ' +
+      '<b>Reload before you use it.</b>' +
+      '<br><br><button onclick="location.reload(true)">Reload this page</button> ' +
+      '&nbsp;or press <b>Ctrl+R</b>.';
+  } else if (s.stale_code){
     sb.style.display = 'block';
     // These instructions were written before start.sh and the launcher icon
     // existed, and still said "press Ctrl+C in the terminal window". Telling

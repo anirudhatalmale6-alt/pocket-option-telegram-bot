@@ -280,3 +280,35 @@ def test_the_route_answers_the_browsers_private_network_preflight(server):
         assert r.status == 204
         assert r.headers.get("Access-Control-Allow-Private-Network") == "true"
         assert r.headers.get("Access-Control-Allow-Origin") == "*"
+
+
+# ------------------------------------------- a tab left open across an update
+#
+# The page is served once and then polls for numbers for ever. Its JAVASCRIPT
+# is whatever it was given, and the blue drag-to-bookmark button's address is
+# built by that JavaScript. So a tab open across an update hands out the
+# PREVIOUS version's bookmark, silently — which is exactly how an afternoon was
+# spent on a bookmark that had already been fixed.
+def test_the_page_is_stamped_with_the_version_that_served_it(server):
+    from core import version
+    _, body = _get(server, "/")
+    assert "__BUILD__" not in body, "the placeholder was served unfilled"
+    assert f"const PAGE_VERSION = '{version.RUNNING}'" in body
+
+
+def test_the_page_compares_its_own_version_against_the_running_bot(server):
+    _, body = _get(server, "/")
+    # Stamp plus poll value plus a visible consequence. Any one of the three
+    # missing and the page goes back to looking current while being stale.
+    assert "PAGE_VERSION !== s.version" in body
+    assert "bm-stale" in body
+    assert "This page is older than the bot" in body
+
+
+def test_the_stamp_does_not_disturb_a_checkout_without_git(server, monkeypatch):
+    # An unpacked zip has no .git, so RUNNING is "". That must leave a page that
+    # simply never claims to be stale, not one that always does.
+    from core import version
+    monkeypatch.setattr(version, "RUNNING", "")
+    _, body = _get(server, "/")
+    assert "const PAGE_VERSION = ''" in body
