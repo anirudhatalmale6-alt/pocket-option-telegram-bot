@@ -82,7 +82,11 @@ def test_the_bookmarklet_is_built_from_this_panels_own_address():
     # Hardcoding localhost:8080 would break on the Chromebook, where the panel
     # answers on penguin.linux.test, and on any VPS.
     assert "location.origin" in PAGE
-    assert '"/hook#"' in PAGE
+    # The address is baked in once, as `var O=…`, and every route back to the
+    # panel is built from it: the /hook tab, the account-id beacon, and the
+    # target postMessage is aimed at.
+    assert "JSON.stringify(location.origin)" in PAGE
+    assert "'/hook#'" in PAGE
 
 
 def test_the_bookmarklet_reads_the_right_cookie():
@@ -112,8 +116,12 @@ def test_the_bookmarklet_is_valid_javascript():
         + src + ";\n"
         # Strip the javascript: scheme and check the body parses.
         "new Function(BOOKMARKLET.slice('javascript:'.length));\n"
-        "if (BOOKMARKLET.indexOf('http://127.0.0.1:8080/hook#') === -1)"
+        # The address and the path are joined at run time now, so they are two
+        # separate pieces of the source rather than one literal.
+        "if (BOOKMARKLET.indexOf('http://127.0.0.1:8080') === -1)"
         " throw new Error('address missing');\n"
+        "if (BOOKMARKLET.indexOf(\"/hook#\") === -1)"
+        " throw new Error('hook path missing');\n"
         "console.log('ok');\n"
     )
     node = subprocess.run(["node", "-e", probe], capture_output=True, text=True)
@@ -185,3 +193,90 @@ def test_a_real_shaped_cookie_with_a_trailing_hash_is_accepted(server):
     res = server.command({"action": "connect", "session": cookie,
                           "uid": "", "demo": True})
     assert res["ok"] is True, res.get("message")
+
+
+def _ping(web, path):
+    """Like _get, but the answer is a GIF — bytes, not text."""
+    port = web._server.server_address[1]
+    with urllib.request.urlopen(f"http://127.0.0.1:{port}{path}", timeout=5) as r:
+        return r.status, r.read()
+
+
+# ------------------------------------------- the account id that arrives late
+#
+# Pocket Option only ever hands over the id of the balance you are CURRENTLY
+# looking at. So a scrape taken while the real balance is selected finds the
+# real id and nothing else, and the practice id only appears later, at the
+# moment the account switcher is used. /uid is where that late id lands.
+def test_a_late_account_id_starts_a_practice_search(server):
+    server._last_session = "a%3A4%3A%7Bs%3A10%3A%22session_id%22%3B%7D"
+    tried = []
+    server._discover_async = lambda *a, **k: tried.append((a, k))
+
+    status, _ = _ping(server, "/uid?id=987654321&demo=1")
+    assert status == 200
+    assert tried, "the id arrived and nothing was done with it"
+    session, uid, demo = tried[0][0][:3]
+    assert uid == 987654321
+    assert demo is True
+
+
+def test_an_id_the_page_called_real_money_is_still_searched_as_practice(server):
+    """
+    The flag on the page is a hint, not an instruction, and the one thing this
+    route must never do is aim the bot at real money on its own. Trying a
+    real-money id AS practice costs a few seconds and is refused; the reverse
+    is somebody's actual balance.
+    """
+    server._last_session = "a%3A4%3A%7Bs%3A10%3A%22session_id%22%3B%7D"
+    tried = []
+    server._discover_async = lambda *a, **k: tried.append(a)
+
+    _ping(server, "/uid?id=138033625&demo=0")
+    assert tried and tried[0][2] is True, "a search was aimed at real money"
+
+
+def test_the_same_id_twice_does_not_start_two_searches(server):
+    # Pocket Option's socket re-authenticates on its own, so the listener fires
+    # again and again. Each search takes half a minute and writes over the log.
+    server._last_session = "a%3A4%3A%7Bs%3A10%3A%22session_id%22%3B%7D"
+    tried = []
+    server._discover_async = lambda *a, **k: tried.append(a)
+
+    _ping(server, "/uid?id=987654321&demo=1")
+    _ping(server, "/uid?id=987654321&demo=1")
+    assert len(tried) == 1
+
+
+def test_an_id_arriving_before_any_cookie_says_so_rather_than_failing(server):
+    server._last_session = ""
+    _ping(server, "/uid?id=987654321&demo=1")
+    assert any("no cookie has been sent yet" in line["text"]
+               for line in server._log)
+
+
+def test_a_nonsense_id_is_ignored_quietly(server):
+    server._last_session = "a%3A4%3A%7Bs%3A10%3A%22session_id%22%3B%7D"
+    tried = []
+    server._discover_async = lambda *a, **k: tried.append(a)
+
+    for bad in ("0", "42", "banana", "99999999999999999999"):
+        status, _ = _ping(server, f"/uid?id={bad}&demo=1")
+        assert status == 200          # a beacon must never look like a fault
+    assert not tried
+
+
+def test_the_route_answers_the_browsers_private_network_preflight(server):
+    """
+    Chrome will not let a page on the public internet touch 127.0.0.1 until the
+    thing on 127.0.0.1 has said it expects it. Without these headers the beacon
+    fails inside the browser, before it is sent — which is invisible from here
+    and looks, on the Pocket Option page, exactly like success.
+    """
+    port = server._server.server_address[1]
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/uid",
+                                 method="OPTIONS")
+    with urllib.request.urlopen(req, timeout=5) as r:
+        assert r.status == 204
+        assert r.headers.get("Access-Control-Allow-Private-Network") == "true"
+        assert r.headers.get("Access-Control-Allow-Origin") == "*"

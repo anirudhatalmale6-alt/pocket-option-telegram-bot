@@ -86,6 +86,16 @@ class WebInterface:
         self._plugins_at = 0.0
         self._lock = threading.Lock()
         self._server: Optional[ThreadingHTTPServer] = None
+        # The last cookie that arrived, kept in memory only.
+        #
+        # The account-id listener on the Pocket Option page reports an id
+        # SECONDS OR MINUTES after the cookie came in — that is its whole
+        # purpose, since the id only appears when the account switcher is used.
+        # By then the cookie is nowhere: a failed search saves nothing, on
+        # purpose. Without this the late id arrives with nothing to try it
+        # against. Never written to disk; a restart correctly forgets it.
+        self._last_session = ""
+        self._seen_uids: dict = {}  # id -> when it was last acted on
 
     # ------------------------------------------------------------ notifier
     async def send(self, text: str) -> None:
@@ -321,10 +331,12 @@ class WebInterface:
         # fragment the bookmark itself produced. Hence a flag rather than an
         # inference from the list being empty.
         if trusted and body.get("stale"):
-            self.log("Note: that bookmark is an older version — it sent the "
-                     "cookie but no account ids, so the search cannot look for "
-                     "your demo account properly. Make the bookmark again from "
-                     "the button on this page and delete the old one.")
+            self.log("Note: that bookmark is an older version. It sent the "
+                     "cookie fine, but it cannot watch the Pocket Option page "
+                     "for your practice account — which is the step that has "
+                     "been failing. Drag the blue button on this page onto "
+                     "your bookmarks bar again, delete the old bookmark, and "
+                     "use the new one.")
 
         # Validate BEFORE writing anything. ssid.normalise knows the difference
         # between the trading token and the chart token that gets copied by
@@ -361,9 +373,58 @@ class WebInterface:
         # single worst step in setting this up, and a mismatched one is refused
         # in complete silence — so the panel works it out itself. On a thread,
         # because each combination takes a few seconds and the page must not hang.
+        # Remember it for the listener. See _last_session in __init__: an id
+        # that arrives after this search has already failed needs a cookie to
+        # be tried with, and by then there is none saved anywhere.
+        self._last_session = session
+
         self._discover_async(session, hint, demo, candidates,
                              via="bookmarklet" if trusted else "typed")
         return result
+
+    def late_uid(self, uid: int, demo: bool) -> str:
+        """
+        An account id the listener on the Pocket Option page caught, after the
+        fact. Returns a short line for the log; the caller decides whether to
+        show it.
+
+        This is the answer to the one step that could not be automated: Pocket
+        Option only ever hands over the id of the balance you are CURRENTLY
+        looking at, so a scrape done while the real balance is selected finds
+        the real id and nothing else. Sitting on the page and watching for the
+        switch is the only way to see the other one without asking somebody to
+        read a WebSocket frame in DevTools.
+        """
+        if not (99999 < uid < 10 ** 13):
+            return ""
+        now = time.time()
+        with self._lock:
+            when = self._seen_uids.get(uid, 0.0)
+            # The listener fires on every re-auth, and Pocket Option's socket
+            # re-authenticates on its own. Without this, leaving the tab open
+            # would kick off a fresh account search every few seconds — each
+            # one taking half a minute and writing over the log.
+            if now - when < 120:
+                return ""
+            self._seen_uids[uid] = now
+            session = self._last_session
+
+        if not session:
+            self.log(f"The Pocket Option page just offered account id {uid}, "
+                     "but no cookie has been sent yet. Click the bookmark on "
+                     "the Pocket Option tab and this id will be used with it.")
+            return "no cookie yet"
+
+        which = "practice" if demo else "real-money"
+        self.log(f"The Pocket Option page just handed over a {which} account "
+                 f"id ({uid}). Trying it now — no need to touch anything.")
+        # demo=True always: this route exists to find the PRACTICE account, and
+        # a search asked for practice can never save a real-money one. Even an
+        # id the page labelled real-money is worth trying as practice — being
+        # refused costs a few seconds, and on some accounts the two ids are the
+        # same. What it must never do is aim at real money on its own.
+        self._discover_async(session, uid, True, [uid], via="bookmarklet")
+        return "searching"
 
     def _save_account(self, session: str, uid: int, demo: bool) -> dict:
         """Write the details to .env, point the config at them, and reconnect."""
@@ -882,6 +943,16 @@ class WebInterface:
                     # fragment, which browsers never send to a server — so it
                     # stays in the tab until that POST.
                     self._send(200, HOOK_PAGE.encode(), "text/html; charset=utf-8")
+                elif path == "/uid":
+                    # Where the listener on the Pocket Option page reports an
+                    # account id it has just seen. A GET that answers with an
+                    # image, because that is the only shape of request a script
+                    # on somebody else's HTTPS page can send to this port
+                    # without CORS, a preflight, or navigating the tab away —
+                    # and navigating the tab away is what killed the listener
+                    # every previous time. DIGITS ONLY ever travel this way:
+                    # the cookie still goes by the fragment-and-POST route.
+                    self._uid_ping(path)
                 elif path == "/api/state":
                     if not self._authed():
                         self._json(401, {"error": "unauthorised"})
@@ -894,6 +965,80 @@ class WebInterface:
                     self._json(200, iface.payouts())
                 else:
                     self._send(404, b"Not found", "text/plain")
+
+            # A 1x1 transparent GIF. The reply is never looked at — the answer
+            # shows up in the panel's own log — but something image-shaped has
+            # to come back or the browser reports the beacon as an error.
+            PIXEL = (b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\x00\x00"
+                     b"\x00!\xf9\x04\x01\x00\x00\x00\x00,\x00\x00\x00\x00\x01"
+                     b"\x00\x01\x00\x00\x02\x02D\x01\x00;")
+
+            def do_OPTIONS(self):
+                """
+                Chrome's Private Network Access preflight.
+
+                A page on the public internet asking a browser to fetch
+                something from 127.0.0.1 is exactly the shape of a router
+                attack, so Chrome will not send that request at all until the
+                thing on 127.0.0.1 has said, in these headers, that it expects
+                it. Without this the beacon fails as ERR_FAILED before it
+                leaves the browser — invisibly, with the page's own status box
+                still cheerfully reporting success.
+                """
+                self.send_response(204)
+                self._cors()
+                self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "*")
+                self.send_header("Access-Control-Max-Age", "600")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+            def _cors(self) -> None:
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Private-Network", "true")
+
+            def _uid_ping(self, path: str) -> None:
+                from urllib.parse import parse_qs, urlparse
+                # No password is possible on this route: a cross-origin image
+                # request cannot carry a header. So when the panel IS password
+                # protected, only the machine it runs on may use it. On a
+                # Chromebook — where every one of these comes from the browser
+                # on the same machine — nothing changes.
+                host = self.client_address[0] if self.client_address else ""
+                local = host in ("127.0.0.1", "::1", "localhost")
+                try:
+                    q = parse_qs(urlparse(self.path).query)
+                    uid = int((q.get("id") or ["0"])[0])
+                    demo = (q.get("demo") or ["1"])[0] not in ("0", "false")
+                    # The visible fallback: a real tab, opened by a click, for
+                    # when the silent beacon is refused.
+                    page = (q.get("close") or [""])[0] == "1"
+                except (ValueError, TypeError):
+                    uid, demo, page = 0, True, False
+
+                if not (iface.password and not local):
+                    try:
+                        iface.late_uid(uid, demo)
+                    except Exception as exc:      # a beacon must never 500
+                        iface.log(f"Could not use that account id: "
+                                  f"{type(exc).__name__}: {exc}")
+
+                if page:
+                    body = UID_PAGE.encode()
+                    ctype = "text/html; charset=utf-8"
+                else:
+                    body, ctype = self.PIXEL, "image/gif"
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Type", ctype)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-store")
+                    self._cors()
+                    self.end_headers()
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError,
+                        ConnectionAbortedError):
+                    return
 
             def do_POST(self):
                 if self.path.split("?")[0] != "/api/cmd":
@@ -1076,9 +1221,18 @@ PAGE = r"""<!doctype html>
     <ol class="howto">
       <li>Press <b>Ctrl+Shift+B</b> to show Chrome's bookmarks bar.</li>
       <li>Drag this button up onto that bar:
-        <a id="bm-link" class="bmk" href="#" onclick="bmClick(event)">Send PO cookie to bot</a></li>
+        <a id="bm-link" class="bmk" href="#" onclick="bmClick(event)">Send PO cookie to bot</a>
+        <div class="sub">If there is already one there from before, delete it.
+          A bookmark is a copy taken the day you made it, so an old one keeps
+          working the old way however many times the bot is updated.</div></li>
       <li>Open <b>pocketoption.com</b> and log in.</li>
       <li>On that page, click the bookmark you just made.</li>
+      <li><b>Leave that tab open</b>, and switch your balance to <b>Demo</b> in
+        the account box at the top right of Pocket Option's page.
+        <div class="sub">Pocket Option only ever tells anything which balance
+          you are looking at right now, so the practice account is invisible
+          until you go to it. The bookmark stays on that page and picks it up
+          the moment you do — you do not have to click anything again.</div></li>
     </ol>
     <div class="btns">
       <button class="ghost" onclick="copyBookmarklet()">Dragging won't work? Copy the address instead</button>
@@ -1227,6 +1381,30 @@ function headers(){
   return h;
 }
 
+// ------------------------------------------ account ids from the PO tab
+//
+// The bookmarklet stays on pocketoption.com and watches for the account
+// switcher being used, because that is the only moment the PRACTICE account id
+// ever appears. Getting that number the four inches from that tab to this one
+// is the awkward part: Chrome 143 refuses outright any network request from a
+// public page to something on 127.0.0.1, so the Pocket Option page cannot
+// simply call this server.
+//
+// postMessage is not a network request, so none of that applies — and the
+// bookmarklet opened this tab, so it has a handle to it. It sends the digits
+// here, and this page, which IS the panel's own origin, passes them on.
+//
+// Digits only, and they can only ever start a search for a PRACTICE account.
+// Nothing here can point the bot at real money.
+window.addEventListener('message', ev => {
+  let m;
+  try{ m = JSON.parse(String(ev.data)); }catch(e){ return; }
+  if (!m || typeof m.po_uid === 'undefined') return;
+  const uid = parseInt(m.po_uid, 10);
+  if (!(uid > 99999 && uid < 1e13)) return;
+  fetch('/uid?id=' + uid + '&demo=' + (m.demo ? 1 : 0)).catch(() => {});
+});
+
 // ------------------------------------------------------------- bookmarklet
 //
 // Built here rather than written into the HTML because it has to carry this
@@ -1236,8 +1414,17 @@ function headers(){
 //
 // Pocket Option sets no HttpOnly flag on ci_session (checked against the live
 // headers), so a script on their page can read it. That is the whole trick.
+//
+// It does NOT navigate this tab any more, and that is the whole point of the
+// current version. It used to end with location.href = panel + '/hook#…',
+// which meant the listener it had just installed on Pocket Option's WebSocket
+// died in the same instant — the page it lived on was gone. So the listener,
+// whose entire job is to notice the account switcher being used LATER, never
+// once got the chance to notice anything. The panel opens in a second tab
+// instead and this one stays put, watching.
 const BOOKMARKLET =
   "javascript:(function(){" +
+  "var O=" + JSON.stringify(location.origin) + ";" +
   "var c=(document.cookie.split('; ').filter(function(x){" +
   "return x.indexOf('ci_session=')===0})[0]||'').slice(11);" +
   "if(!c){alert('No Pocket Option cookie on this page.\\n\\n" +
@@ -1253,10 +1440,46 @@ const BOOKMARKLET =
   // ONLY INTEGERS LEAVE THE PAGE. This walks whole parsed objects, which will
   // include tokens and personal details, and keeps nothing but numbers in a
   // plausible id range. Nothing else is recorded, sent or logged.
-  "var d={};" +
+  "var d={},sent={},queue=[],flushed=0,w=null;" +
   "var K=/uid|userid|user_id|account|profile/i;" +
-  "function keep(x){var n=parseInt(x,10);" +
-  "if(n>99999&&n<1e13&&String(n)===String(x).trim())d[n]=1}" +
+  // Two tighter patterns used together, below: an object that carries BOTH an
+  // id-shaped key and a demo flag is an account record, and it says which KIND
+  // of account the id belongs to. That is the one fact the cookie never
+  // carries and the whole reason this step exists.
+  "var ID=/^(id|uid|user_?id|account_?id)$/i;" +
+  "var DM=/^is_?demo$/i;" +
+  "function num(x){var n=parseInt(x,10);" +
+  "return(n>99999&&n<1e13&&String(n)===String(x).trim())?n:0}" +
+  "function keep(x){var n=num(x);if(n)d[n]=1}" +
+  // Report one id to the panel as an image request. Cross-origin, no CORS, no
+  // preflight, and — unlike a navigation — it leaves this page alive. Only
+  // digits are in that URL; the cookie goes the other way, in a fragment.
+  //
+  // Three ways, because the obvious one does not work. Chrome 143 refuses any
+  // network request from a public page to 127.0.0.1 outright — "Permission was
+  // denied for this request to access the local address space" — no preflight,
+  // no prompt, nothing this page can do about it. Measured, not assumed: the
+  // image below fails exactly that way on a real browser.
+  //
+  //   1. postMessage to the panel tab this bookmark opened. Not a network
+  //      request at all, so none of that applies. Silent and instant.
+  //   2. The image, for when the panel is not across an address-space
+  //      boundary — an older browser, or the panel reached over the LAN.
+  //   3. A box on this page to click. A click carries user activation, and a
+  //      window it opens is a top-level navigation, which is allowed where
+  //      every quiet route is not. This is the one that always works, so it is
+  //      always offered rather than kept for a failure nothing can detect.
+  "function beam(n,f){if(!n||sent[n+':'+f])return;sent[n+':'+f]=1;" +
+  "if(!flushed){queue.push([n,f]);return}" +
+  "try{if(w&&!w.closed)w.postMessage(JSON.stringify({po_uid:n,demo:f}),O)}catch(e){}" +
+  "try{new Image().src=O+'/uid?id='+n+'&demo='+f+'&r='+Math.random()}catch(e){}}" +
+  // Ids found by the scrape are held back for a few seconds. They also travel
+  // in the fragment, and the panel cannot try an id until the cookie it goes
+  // with has arrived — so beaming them the instant they are found just makes
+  // the panel say "an id, but no cookie yet" and log a line that reads like a
+  // fault. Anything the listener catches later arrives long after this.
+  "setTimeout(function(){flushed=1;var q=queue;queue=[];" +
+  "q.forEach(function(p){sent[p[0]+':'+p[1]]=0;beam(p[0],p[1])})},4000);" +
   // A visited set and a node budget, because this now walks `window` too. A
   // live trading page has cyclic references everywhere (parent, ownerDocument,
   // Vue's $root) and without both of these the bookmark locks the tab up.
@@ -1266,8 +1489,16 @@ const BOOKMARKLET =
   // on the page, spend the whole budget and find nothing: ids live in the
   // app's state, not its markup.
   "if(v instanceof Node||v===window||seen.has(v))return;seen.add(v);" +
+  // f and ids are this object's own: is it an account record, and which
+  // account. Collected across the whole loop because the flag and the id can
+  // be in either order.
+  "var f=-1,ids=[];" +
   "for(var k in v){if(--budget<0)return;" +
-  "try{if(K.test(k))keep(v[k]);walk(v[k],z+1)}catch(e){}}}" +
+  "try{if(K.test(k))keep(v[k]);" +
+  "if(DM.test(k))f=(v[k]===1||v[k]==='1'||v[k]===true||v[k]==='true')?1:0;" +
+  "if(ID.test(k)){var q=num(v[k]);if(q)ids.push(q)}" +
+  "walk(v[k],z+1)}catch(e){}}" +
+  "if(f>=0)ids.forEach(function(n){d[n]=1;beam(n,f)})}" +
   "[localStorage,sessionStorage].forEach(function(s){" +
   "for(var i=0;i<s.length;i++){try{var k=s.key(i),r=s.getItem(k);" +
   "if(K.test(k))keep(r);" +
@@ -1282,28 +1513,107 @@ const BOOKMARKLET =
   "if(i>0&&K.test(p.slice(0,i)))keep(decodeURIComponent(p.slice(i+1)))})}catch(e){}" +
   "try{for(var g in window){try{if(K.test(g))keep(window[g]);" +
   "walk(window[g],0)}catch(e){}}}catch(e){}" +
-  // And if none of that finds it: listen for it.
+  // Whatever a previous run's listener wrote down.
+  "try{['demo','real'].forEach(function(t){" +
+  "var v=localStorage.getItem('pobot_account_'+t);" +
+  "if(v){keep(v);beam(num(v),t==='demo'?1:0)}})}catch(e){}" +
+
+  // The cookie goes to the panel in a fragment, which no browser sends to a
+  // server; the panel page in that tab posts it properly.
   //
-  // Pocket Option's own page has to send the id — it is in the auth frame on
-  // their WebSocket, which is the one place it is guaranteed to exist. A
-  // bookmark cannot see frames sent before it ran, so this wraps `send` and
-  // writes what it catches into localStorage, where the scrape above finds it
-  // on the NEXT click. Any re-auth triggers it: switching Demo/Real, or just
-  // their socket reconnecting on its own after a minute.
+  // In a SECOND tab, and the handle is kept. Navigating THIS tab — which is
+  // what this used to do — is what stopped every listener below from ever
+  // seeing anything: they were installed and destroyed in the same instant.
+  // The handle is also the only channel back to the panel that Chrome does not
+  // treat as a public page reaching into the local network.
   //
-  // Only the digits of the id are stored. The frame also carries the session,
-  // and that is not written anywhere.
+  // If the browser blocks the popup there is nothing left but to navigate, and
+  // lose them again — but then the page never got to watch anyway.
+  // The trailing |2 is the bookmark's version. Updating the bot does NOT
+  // update a bookmark — the JavaScript was copied into Chrome the day it was
+  // made and stays exactly as it was — and an old one still sends a perfectly
+  // good cookie, so nothing looks wrong. It just quietly cannot do any of the
+  // watching below, which is the entire fix. Saying so is only possible if it
+  // says which version it is.
+  "var P=O+'/hook#'+encodeURIComponent(c)+'|'+" +
+  "Object.keys(d).slice(0,8).join(',')+'|2';" +
+  "try{w=window.open(P,'_blank')}catch(e){}" +
+  "if(!w){location.href=P;return}" +
+
+  // A panel of its own, on Pocket Option's page.
+  //
+  // Everything from here on happens on THIS tab, seconds or minutes after the
+  // click, and the bot's log is in a different window. Without something on
+  // screen here there is no way to tell "switch your balance and I will catch
+  // it" from "nothing happened".
+  "var B=document.getElementById('pobot_box')||document.createElement('div');" +
+  "B.id='pobot_box';" +
+  "B.style.cssText='position:fixed;z-index:2147483647;top:12px;right:12px;" +
+  "width:290px;background:#11161f;color:#e6edf3;font:14px/1.45 system-ui," +
+  "Arial,sans-serif;border:1px solid #2a3342;border-radius:10px;" +
+  "padding:12px 14px;box-shadow:0 8px 28px rgba(0,0,0,.45)';" +
+  // Built as text nodes, never innerHTML: some of this is a number that came
+  // off somebody else's page.
+  "function say(h,t,ok){B.textContent='';" +
+  "var a=document.createElement('div');" +
+  "a.style.cssText='font-weight:700;margin-bottom:6px;color:'+(ok?'#22c55e':'#e6edf3');" +
+  "a.textContent=h;var b=document.createElement('div');" +
+  "b.style.color='#9fb0c4';b.textContent=t;" +
+  "var x=document.createElement('div');x.textContent='close';" +
+  "x.style.cssText='margin-top:10px;font-size:12px;color:#6b7a8d;cursor:pointer';" +
+  "x.onclick=function(ev){ev.stopPropagation();B.remove()};" +
+  "B.appendChild(a);B.appendChild(b);B.appendChild(x)}" +
+  "say('Cookie sent to the bot','Now click your balance at the TOP RIGHT of " +
+  "this page and choose the Demo account. Leave this tab open — I am watching " +
+  "for it, and the bot will pick it up on its own.',0);" +
+  "try{document.body.appendChild(B)}catch(e){}" +
+
+  // And the listener itself.
+  //
+  // Pocket Option's page has to send the id — it is in the auth frame on their
+  // WebSocket, the one place it is guaranteed to exist — and it sends a fresh
+  // one when the account switcher is used, because the socket authenticates
+  // per account. That frame is the ONLY place the practice id appears while
+  // the real balance is the one on screen.
+  //
+  // Only digits are kept. The same frames carry the session, and that is never
+  // written down, beamed or stored.
+  "function got(n,f){n=num(n);if(!n)return;" +
+  "try{localStorage.setItem('pobot_account_'+(f?'demo':'real'),String(n))}catch(e){}" +
+  "if(f&&!sent[n+':1']){beam(n,f);" +
+  "say('Found your practice account — '+n,'Sent to the bot: go back to the bot " +
+  "tab and watch the log at the bottom. If nothing appears there within about " +
+  "ten seconds, click this box and it will go through for certain.',1);" +
+  "B.style.cursor='pointer';B.onclick=function(){" +
+  "window.open(O+'/uid?id='+n+'&demo=1&close=1','_blank')};return}" +
+  "beam(n,f)}" +
+  // An id and a demo flag inside the same object, in either order. Bounded
+  // between the two so a match cannot span a whole frame full of prices and
+  // pair up an id with somebody else's flag.
+  "function scan(x){try{" +
+  "if(x.indexOf('uid')<0&&x.indexOf('emo')<0)return;var m;" +
+  "var r1=/\"(?:uid|id|user_id|account_id)\"\\s*:\\s*\"?(\\d{5,13})\"?" +
+  "[^{}]{0,80}?\"is_?[Dd]emo\"\\s*:\\s*\"?(\\d|true|false)/g;" +
+  "while((m=r1.exec(x)))got(m[1],(m[2]==='1'||m[2]==='true')?1:0);" +
+  "var r2=/\"is_?[Dd]emo\"\\s*:\\s*\"?(\\d|true|false)\"?" +
+  "[^{}]{0,80}?\"(?:uid|id|user_id|account_id)\"\\s*:\\s*\"?(\\d{5,13})/g;" +
+  "while((m=r2.exec(x)))got(m[2],(m[1]==='1'||m[1]==='true')?1:0);" +
+  "}catch(e){}}" +
+  // Outgoing frames: the auth frame this page sends.
   "try{if(!WebSocket.prototype.__po){var S=WebSocket.prototype.send;" +
-  "WebSocket.prototype.send=function(x){try{if(typeof x==='string'&&x.indexOf('uid')>=0){" +
-  "var m=x.match(/\"uid\"\\s*:\\s*\"?(\\d{5,13})/);" +
-  "var q=x.match(/\"isDemo\"\\s*:\\s*\"?(\\d)/);" +
-  "if(m)localStorage.setItem('pobot_account_'+(q&&q[1]==='1'?'demo':'real'),m[1])" +
-  "}}catch(e){}return S.apply(this,arguments)};" +
+  "WebSocket.prototype.send=function(x){" +
+  "try{if(typeof x==='string')scan(x)}catch(e){}return S.apply(this,arguments)};" +
   "WebSocket.prototype.__po=1}}catch(e){}" +
-  // The value rides in the fragment, which no browser sends to a server. It
-  // reaches the panel page in the tab and is posted from there.
-  "location.href=" + JSON.stringify(location.origin + "/hook#") +
-  "+encodeURIComponent(c)+'|'+Object.keys(d).slice(0,8).join(',')})()";
+  // Incoming frames on sockets opened from now on. Their reply to auth, and
+  // the balance updates that follow, name the account too — and a reconnect
+  // happens by itself, so this can find it without anything being clicked.
+  "try{if(!window.__poRx){var W=window.WebSocket;" +
+  "var N=function(){var s=new(Function.prototype.bind.apply(" +
+  "W,[null].concat([].slice.call(arguments))))();" +
+  "try{s.addEventListener('message',function(e){" +
+  "try{if(typeof e.data==='string')scan(e.data)}catch(z){}})}catch(z){}return s};" +
+  "N.prototype=W.prototype;N.CONNECTING=0;N.OPEN=1;N.CLOSING=2;N.CLOSED=3;" +
+  "window.WebSocket=N;window.__poRx=1}}catch(e){}})()";
 
 function bmClick(ev){
   // Clicking it here would run it against this page, which has no PO cookie —
@@ -1794,6 +2104,28 @@ setInterval(refresh, 2000);
 #
 # No selecting, no copying, no second window, and no way to copy half of it.
 # --------------------------------------------------------------------------
+UID_PAGE = r"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Account id received</title>
+<style>
+  body{background:#0d1117;color:#e6edf3;font:16px/1.5 system-ui,Arial,sans-serif;
+       display:grid;place-items:center;height:100vh;margin:0;text-align:center}
+  .box{max-width:440px;padding:26px 30px;background:#11161f;
+       border:1px solid #2a3342;border-radius:14px}
+  h1{font-size:19px;margin:0 0 10px;color:#22c55e}
+  p{margin:0 0 12px;color:#9fb0c4;font-size:14px}
+  a{display:inline-block;margin-top:6px;background:#1d2430;border:1px solid #2a3342;
+    color:#e6edf3;border-radius:9px;padding:10px 16px;text-decoration:none}
+</style></head><body><div class="box">
+<h1>Got it — that is your practice account</h1>
+<p>The bot is checking it now. Go back to the control panel and watch the log
+   at the bottom; it will say whether Pocket Option accepted it.</p>
+<p>You can close this tab.</p>
+<a href="/">Back to the control panel</a>
+</div>
+<script>setTimeout(function(){try{window.close()}catch(e){}}, 2500);</script>
+</body></html>
+"""
+
 HOOK_PAGE = r"""<!doctype html>
 <html lang="en">
 <head>
@@ -1825,6 +2157,20 @@ HOOK_PAGE = r"""<!doctype html>
 <script>
 // Same origin as the panel, so the password it stored is right here.
 const pass = localStorage.getItem('pobot_pass') || '';
+
+// This is the tab the bookmarklet opened, so it is the one holding the handle
+// the Pocket Option page posts account ids to — and on several of the screens
+// below it is where that tab STAYS, rather than moving on to the panel. The
+// listener has to be here as well as there or the id lands in a tab that is
+// not listening. Same rules: digits only, practice only.
+window.addEventListener('message', ev => {
+  let m;
+  try{ m = JSON.parse(String(ev.data)); }catch(e){ return; }
+  if (!m || typeof m.po_uid === 'undefined') return;
+  const uid = parseInt(m.po_uid, 10);
+  if (!(uid > 99999 && uid < 1e13)) return;
+  fetch('/uid?id=' + uid + '&demo=' + (m.demo ? 1 : 0)).catch(() => {});
+});
 
 function say(head, msg, cls){
   document.getElementById('head').textContent = head;
@@ -1861,9 +2207,14 @@ async function go(){
   const sep = /\||%7C/i.exec(raw);
   const bar = sep ? sep.index : -1;
   const session = decodeURIComponent(bar === -1 ? raw : raw.slice(0, bar));
-  const uids = bar === -1 ? [] :
-    raw.slice(bar + sep[0].length).split(',')
+  // cookie | ids | version.  The version is what a bookmark made before the
+  // rewrite does not have, and a bookmark without it cannot watch for the
+  // practice account — see `ver` below.
+  const rest = bar === -1 ? [] :
+    raw.slice(bar + sep[0].length).split(/\||%7C/i);
+  const uids = (rest[0] || '').split(',')
        .filter(x => /^[0-9]{6,13}$/.test(x));
+  const ver = rest[1] || '';
   // The length is the one number worth showing. A whole cookie is several
   // hundred characters, so a short one says "half of it came through" rather
   // than "your login expired" — two failures that otherwise look identical.
@@ -1872,10 +2223,13 @@ async function go(){
 
   // Updating the bot does NOT update a bookmark: the JavaScript was copied into
   // Chrome when it was made and stays exactly as it was. An old bookmark still
-  // sends the cookie, so nothing looks broken — it just silently never sends
-  // any account ids, and the search goes on failing for a reason nobody can
-  // see. The missing separator is the tell.
-  const stale = bar === -1;
+  // sends the cookie, so nothing looks broken — it just silently cannot do the
+  // part that matters, and the search goes on failing for a reason nobody can
+  // see. Two generations of that now: the first sent no account ids at all,
+  // the second navigated its own tab away and so could never watch for the
+  // practice account. Both are told apart from a current one here and nowhere
+  // else, because from the server's side they are identical.
+  const stale = bar === -1 || ver !== '2';
 
   try{
     const h = {'Content-Type':'application/json'};
@@ -1905,11 +2259,13 @@ async function go(){
       // but this is the difference between a search that can find the demo
       // account and one that cannot, and it is invisible from the log.
       say('Cookie accepted — but your bookmark is out of date',
-          (res.message || '') + ' It sent the cookie without any account ids, ' +
-          'so the search cannot look for your demo account properly. Updating ' +
-          'the bot does not update a bookmark. Go back to the panel, make the ' +
-          'bookmark again from the button there, delete the old one, and click ' +
-          'the new one on pocketoption.com.', 'bad');
+          (res.message || '') + ' Updating the bot does not update a bookmark: ' +
+          'yours still has the JavaScript from the day you made it. The current ' +
+          'one stays on the Pocket Option page after you click it and watches ' +
+          'for your practice account, which is the part that has been failing. ' +
+          'Go back to the panel, drag the blue button onto your bookmarks bar ' +
+          'again, DELETE the old bookmark so you cannot click it by mistake, ' +
+          'and use the new one on pocketoption.com.', 'bad');
     } else if (res.ok && uids.length === 0){
       // Current bookmark, ran properly, and still found no account id on the
       // page. Worth its own screen: the cookie is fine and the search that is

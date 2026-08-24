@@ -61,8 +61,17 @@ window.appBody = document.body;                    // the DOM, reachable
 </script>"""
 
 
-def _run(html, after=""):
-    """Run the real bookmarklet against `html` and return (fragment, extra)."""
+def _run(html, after="", wait=800):
+    """
+    Run the real bookmarklet against `html` and return (fragment, extra).
+
+    It hands the panel a SECOND tab now and stays on the Pocket Option page
+    itself, so what is collected here is the popup's URL, not a navigation.
+    That change is the point of the current version rather than an incidental
+    one: everything the bookmarklet installs — the account-switch listener
+    above all — lives on this page, and navigating it away destroyed the lot in
+    the same instant they were created.
+    """
     expr = re.search(r"const BOOKMARKLET =\n(.*?);\n\nfunction bmClick",
                      SRC, re.S).group(1)
     with sync_playwright() as p:
@@ -73,26 +82,33 @@ def _run(html, after=""):
             # between the two. That is a missing tool, not a failing bookmarklet
             # — erroring here would report a bug that is not there.
             pytest.skip(f"no usable browser: {exc}")
-        page = browser.new_page()
-        page.route("http://po.test/**", lambda r: r.fulfill(
+        ctx = browser.new_context()
+        # On the CONTEXT, not the page: the second tab is served from here too,
+        # and an unrouted popup lands on chrome-error:// with no URL to read.
+        ctx.route("http://po.test/**", lambda r: r.fulfill(
             status=200, content_type="text/html", body=html))
+        page = ctx.new_page()
         page.goto("http://po.test/")
 
         js = page.evaluate("() => { const BOOKMARKLET = " + expr + "; return BOOKMARKLET; }")
         assert js.startswith("javascript:")
         body = js[len("javascript:"):]
 
-        urls: list[str] = []
-        page.on("framenavigated", lambda f: urls.append(f.url))
-        # `after` runs in the same synchronous turn as the bookmarklet, before
-        # the navigation it queued has committed — the only moment at which the
-        # things it installed on this page are still there to inspect.
+        opened: list = []
+        ctx.on("page", lambda t: opened.append(t))
         extra = page.evaluate("() => { " + body + ";\n" + (after or "return null") + " }")
-        page.wait_for_timeout(800)
+        page.wait_for_timeout(wait)
+        still_here = not page.is_closed() and "po.test" in page.url
+        box = page.evaluate(
+            "() => { const b = document.getElementById('pobot_box');"
+            "        return b ? b.textContent : ''; }")
+        urls = [t.url for t in opened]
         browser.close()
 
     url = next((u for u in urls if "/hook#" in u), None)
-    assert url, f"the bookmarklet never navigated to the panel; saw {urls}"
+    assert url, f"the bookmarklet never opened the panel; saw {urls}"
+    assert still_here, "the Pocket Option tab did not survive the click"
+    _run.box = box                # read by the tests that care about it
     return url, extra
 
 
@@ -103,8 +119,15 @@ def fragment():
 
 
 def _ids(fragment):
-    _, _, ids = fragment.split("#", 1)[1].partition("|")
+    # cookie | ids | bookmark version
+    parts = fragment.split("#", 1)[1].split("|")
+    ids = parts[1] if len(parts) > 1 else ""
     return set(ids.split(",")) if ids else set()
+
+
+def _version(fragment):
+    parts = fragment.split("#", 1)[1].split("|")
+    return parts[2] if len(parts) > 2 else ""
 
 
 def test_the_cookie_still_comes_through(fragment):
@@ -182,6 +205,39 @@ def test_what_the_listener_stored_is_picked_up_on_the_next_click():
     assert "777666555" in _ids(_run(page)[0])
 
 
+# ------------------------------- the listener has to still be there afterwards
+def test_the_page_survives_the_click_and_is_still_listening():
+    """
+    The fault this replaced: the bookmarklet navigated its own tab to the panel,
+    which destroyed the listener it had just installed. So the listener whose
+    only job is to notice the account switcher being used LATER never once got
+    to notice anything, and the practice account stayed unreachable through
+    three separate attempts at it.
+
+    `after` runs in the same turn as the click; the frame here is sent a beat
+    later, from a tab that must still exist to receive it.
+    """
+    _run(IN_MEMORY_PAGE, after="""
+      setTimeout(function(){
+        try{ WebSocket.prototype.send.call({}, '42["auth",{"session":"S","isDemo":1,"uid":555444333}]') }catch(e){}
+      }, 50);
+      return null;
+    """, wait=1500)
+    assert "555444333" in _run.box, \
+        "an id caught after the click never reached the page's status box"
+
+
+def test_the_status_box_says_what_to_do_next():
+    """
+    Everything after the click happens on Pocket Option's page, and the bot's
+    log is in a different window. Without this there is no way to tell "switch
+    your balance and I will catch it" from "nothing happened" — which is what
+    it looked like, for hours.
+    """
+    _run(IN_MEMORY_PAGE)
+    assert "Demo" in _run.box and "TOP RIGHT" in _run.box
+
+
 # ------------------------------------------------------- what must not come back
 def test_nothing_but_integers_ever_leaves_the_page(fragment):
     """
@@ -199,3 +255,13 @@ def test_walking_the_page_s_own_state_leaks_nothing_either(in_memory):
     for secret in ("SECRET", "@x.com", "dark", "NUXT"):
         assert secret not in in_memory, f"{secret!r} left the page"
     assert all(x.isdigit() for x in _ids(in_memory))
+
+
+def test_the_bookmark_says_which_version_it_is(fragment):
+    """
+    A bookmark is a copy, frozen the day it was dragged onto the bar; updating
+    the bot cannot touch it. An old one still hands over a perfectly good
+    cookie, so nothing looks wrong — it simply cannot do the watching, which is
+    the whole fix. This is the only thing that tells the panel which it has.
+    """
+    assert _version(fragment) == "2"
