@@ -381,6 +381,13 @@ class Trader:
             # Respect daily caps before doing anything.
             allowed, reason = self.risk.can_trade()
             if not allowed:
+                # Asked to keep going after the target rather than stop. Only
+                # ever reachable from the PROFIT target — can_bank() checks the
+                # loss cap itself, so a losing day still stops dead here no
+                # matter what this setting says.
+                if self.risk.can_bank():
+                    await self.notify(self.risk.bank_and_restart())
+                    continue
                 await self.notify(f"⛔ Trading paused: {reason}. Use /reset to clear or /stop.")
                 cfg.running = False
                 continue

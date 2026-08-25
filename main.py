@@ -197,8 +197,13 @@ async def run(paper: bool) -> None:
             # one-click button exists to replace. The full text is in the
             # terminal log above for anyone who wants it.
             web.log(f"Reason: {token_error.strip().splitlines()[0]}")
-            web.log("Send a fresh cookie with the one-click button and it will "
-                    "switch to your account — no restart needed.")
+            # Before telling anybody to go and click something: the commonest
+            # reason a saved cookie is refused is that it has no account id
+            # beside it, and that is a question the bot can answer by itself.
+            # Only fall back to instructions when there is nothing to search.
+            if not web.connect_saved():
+                web.log("Send a fresh cookie with the one-click button and it "
+                        "will switch to your account — no restart needed.")
         shown = "localhost" if config.web_host in ("0.0.0.0", "") else config.web_host
         log.info("Control panel: http://%s:%s", shown, config.web_port)
         if not config.web_password and config.web_host == "0.0.0.0":

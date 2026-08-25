@@ -202,6 +202,13 @@ class WebInterface:
             "stake": c.risk.base_stake,
             "loss_cap": c.risk.daily_loss_cap,
             "profit_target": c.risk.daily_profit_target,
+            "auto_restart": c.risk.auto_restart,
+            # How many times it has banked the target and gone again today, and
+            # how far into the current run it is. Both belong on screen: without
+            # them a bot that has quietly restarted six times looks exactly like
+            # one that has traded all day and made very little.
+            "restarts": getattr(self.risk, "restarts", 0) if self.risk else 0,
+            "run_pnl": round(getattr(self.risk, "run_pnl", 0.0), 2) if self.risk else 0.0,
             "mg_enabled": c.martingale.enabled,
             "mg_mult": c.martingale.multiplier,
             "mg_steps": c.martingale.max_steps,
@@ -298,6 +305,9 @@ class WebInterface:
             f"stop on loss    {s['loss_cap']}",
             f"stop on profit  {s['profit_target']}"
             + ("   (0 = off, it keeps going)" if not s["profit_target"] else ""),
+            f"after target    {'BANK IT AND RESTART' if s['auto_restart'] else 'stop'}"
+            + (f"   ({s['restarts']} restart(s) today, this run "
+               f"{s['run_pnl']:+.2f})" if s["auto_restart"] else ""),
             f"martingale      {'ON x' + str(s['mg_mult']) + ', ' + str(s['mg_steps']) + ' steps'
                                if s['mg_enabled'] else 'off'}",
             "",
@@ -536,6 +546,43 @@ class WebInterface:
         self._discover_async(session, uid, True, [uid], via="bookmarklet")
         return "searching"
 
+    def connect_saved(self) -> bool:
+        """
+        Try the cookie already in .env, on start-up, without anybody clicking.
+
+        This closes a trap the client sat in for weeks. A cookie can be saved
+        with no account id — that happens whenever a search fails and the id it
+        had is cleared as wrong — and from then on every start-up ends the same
+        way: the token is refused for having no uid, the bot comes up in
+        practice, and the panel prints "also set PO_UID", which is DevTools
+        homework aimed at somebody who has no text editor. The one thing that
+        could have fixed it, the account search, only ever ran when a cookie
+        ARRIVED. A restart therefore could not recover, no matter how good the
+        saved cookie was, and the log said nothing about needing another click.
+
+        So: if there is a cookie and no id, go and look for the id — the same
+        search, on the same thread, saving to the same place. Returns True when
+        a search was started, so the caller can say so instead of printing
+        instructions for a step that is already running.
+        """
+        from .ssid import session_value
+        c = self.config
+        session = session_value(c.po_ssid or "")
+        if not session or not session.strip():
+            return False
+        # Only for a token that was REFUSED. A saved pair that the token check
+        # accepted is a connected bot, and searching it would spend half a
+        # minute of connect-and-wait re-proving something that already works —
+        # and worse, could clear a good id if a probe happened to be refused.
+        if not self.token_error:
+            return False
+        with self._lock:
+            self._last_session = session
+        self.log("There is a saved cookie but no account id. Looking the account "
+                 "up now — nothing for you to click.")
+        self._discover_async(session, c.po_uid, c.po_demo, [], via="startup")
+        return True
+
     def _save_account(self, session: str, uid: int, demo: bool) -> dict:
         """Write the details to .env, point the config at them, and reconnect."""
         c = self.config
@@ -597,21 +644,43 @@ class WebInterface:
         if not self.auto_discover:      # off in tests; this step talks to the network
             return
 
-        # How many REAL account ids this search will get to try. uid 0 is always
-        # in the list and is not one of them — it is the "maybe the cookie is
-        # enough on its own" long shot. The difference decides what a total
-        # failure is allowed to conclude, so it is worked out from the same
-        # function the search uses rather than re-derived here.
-        ids_tried = len([u for u in _uids(uid, candidates) if u])
-
         def work() -> None:
             import asyncio as _aio
             from .discover import find_account
             self.log("Working out which Pocket Option account this cookie opens…")
+
+            # Ask Pocket Option's own website for the account id before trying
+            # anything. The cookie IS a login, so the site will answer as him —
+            # and every other route to this number (DevTools, walking the page's
+            # JavaScript from the bookmark) has failed on his machine for weeks.
+            # It also tells the two dead ends apart for the first time: a site
+            # that answers logged-OUT means the cookie is finished, which used
+            # to look identical to a cookie whose id we simply could not find.
+            ids = list(candidates or [])
+            try:
+                from .uid_lookup import account_ids
+                found_ids = account_ids(session, log=self.log)
+                for value in found_ids.ids:
+                    if value not in ids:
+                        ids.append(value)
+            except Exception as exc:
+                # Never fatal. This is an extra source of guesses, and the old
+                # routes still work without it.
+                self.log(f"Could not ask the website for the account id "
+                         f"({type(exc).__name__}). Carrying on with what we have.")
+
+            # How many REAL account ids this search gets to try. uid 0 is always
+            # in the list and is not one of them — it is the "maybe the cookie is
+            # enough on its own" long shot. The difference decides what a total
+            # failure is allowed to conclude, so it is worked out from the same
+            # function the search uses rather than re-derived here. Counted after
+            # the lookup, because ids it found are ids that get tried.
+            ids_tried = len([u for u in _uids(uid, ids) if u])
+
             try:
                 found = _aio.run(find_account(session, uid_hint=uid,
                                               demo_hint=demo, log=self.log,
-                                              candidates=candidates))
+                                              candidates=ids))
             except Exception as exc:
                 self.log(f"Could not check the account: {type(exc).__name__}: {exc}")
                 found = None
@@ -703,6 +772,14 @@ class WebInterface:
                          "(or just leave it open a minute), then click the "
                          "bookmark again. That second click is the one that "
                          "finds it.")
+            elif via == "startup":
+                self.log(f"⚠️ The cookie saved in your settings could not get in "
+                         f"({size}), and Pocket Option's website did not give up "
+                         "an account id for it either. That combination usually "
+                         "means the cookie has expired — a cookie dies when you "
+                         "log out, and after a while on its own. Open "
+                         "pocketoption.com, log in, click the blue bookmark, and "
+                         "do not log out afterwards.")
             else:
                 self.log(f"⚠️ Could not get in ({size}) — but this does not "
                          "mean your cookie is bad. A pasted cookie carries no "
@@ -767,6 +844,15 @@ class WebInterface:
             # sends confirm_live only after showing that in plain words.
             if self._is_live() and not body.get("confirm_live"):
                 need = 100.0 * 100.0 / (100.0 + c.payout_percent) if c.payout_percent else 100.0
+                # This is the one screen where "how much can this lose while I
+                # am not watching" has to be answered completely. With restarts
+                # on, the target no longer ends the session — it keeps trading
+                # all day and the loss cap is the only thing that stops it.
+                restart_note = ""
+                if c.risk.auto_restart:
+                    restart_note = (f", and it RESTARTS after each "
+                                    f"${c.risk.daily_profit_target:.2f} target, so "
+                                    f"the loss cap is the only thing that stops it")
                 return {"ok": False, "needs_live_confirm": True,
                         "message": (
                             f"This is your REAL money account.\n\n"
@@ -779,7 +865,8 @@ class WebInterface:
                             f"(docs/RESULTS.md).\n\n"
                             f"Stake ${c.risk.base_stake:.2f}, stops after losing "
                             f"${c.risk.daily_loss_cap:.2f} today"
-                            f"{', MARTINGALE IS ON' if c.martingale.enabled else ''}.\n\n"
+                            f"{', MARTINGALE IS ON' if c.martingale.enabled else ''}"
+                            f"{restart_note}.\n\n"
                             f"Start trading real money anyway?")}
             if self._is_live():
                 self.log("⚠ START on a LIVE account — real money is now at risk.")
@@ -982,6 +1069,21 @@ class WebInterface:
                     return {"ok": False, "message": "Profit target cannot be negative."}
                 c.risk.daily_profit_target = v
                 changed.append(f"profit target {v}")
+
+            if "auto_restart" in body:
+                want = bool(body["auto_restart"])
+                # Checked BEFORE it is applied, and against the target as it
+                # stands after the block above — the two are nearly always sent
+                # in the same save. Ticking this with no target is a box that
+                # cannot do anything, and nothing on the page would say so.
+                if want and c.risk.daily_profit_target <= 0:
+                    return {"ok": False,
+                            "message": "Set a 'stop after winning' amount as well "
+                                       "— there is no target to restart from "
+                                       "otherwise, so the bot would simply keep "
+                                       "trading until the loss limit stops it."}
+                c.risk.auto_restart = want
+                changed.append(f"restart after target {'on' if want else 'off'}")
 
             if "mg_enabled" in body:
                 c.martingale.enabled = bool(body["mg_enabled"])
@@ -1466,6 +1568,14 @@ PAGE = r"""<!doctype html>
       <div><label for="f-loss">Stop after losing ($)</label><input id="f-loss" type="number" step="0.01" min="0"></div>
       <div><label for="f-target">Stop after winning ($, 0 = off)</label><input id="f-target" type="number" step="0.01" min="0"></div>
       <div>
+        <label>After the target, start again</label>
+        <div class="row"><input type="checkbox" id="f-restart"><label for="f-restart">Bank it and keep trading</label></div>
+        <div class="sub">Each target is banked and a new one starts from there.
+          The "stop after losing" limit above is NOT restarted with it — it keeps
+          counting the whole day and still stops everything. Restarting does not
+          improve the odds of the next trade; it only decides when to stop.</div>
+      </div>
+      <div>
         <label>Martingale (double up after a loss)</label>
         <div class="row"><input type="checkbox" id="f-mg"><label for="f-mg">Enabled — off is safer</label></div>
       </div>
@@ -1886,6 +1996,7 @@ function saveSettings(){
     timeframe:document.getElementById('f-timeframe').value,
     loss_cap: document.getElementById('f-loss').value,
     profit_target: document.getElementById('f-target').value,
+    auto_restart: document.getElementById('f-restart').checked,
     mg_enabled: document.getElementById('f-mg').checked,
     mg_mult:  document.getElementById('f-mgmult').value,
     mg_steps: document.getElementById('f-mgsteps').value
@@ -2267,6 +2378,7 @@ function render(s){
   }
   setField('f-loss', s.loss_cap);
   setField('f-target', s.profit_target);
+  setField('f-restart', s.auto_restart);
   setField('f-mg', s.mg_enabled);
   setField('f-mgmult', s.mg_mult);
   setField('f-mgsteps', s.mg_steps);

@@ -84,6 +84,11 @@ class RiskSettings:
     daily_loss_cap: float = 20.0       # stop trading after net loss reaches this
     daily_profit_target: float = 0.0   # stop after this net profit (0 = disabled)
     max_concurrent_trades: int = 1     # binary options: usually 1 at a time
+    # Carry on trading after the profit target instead of stopping, banking each
+    # run's profit as it goes. The DAILY LOSS CAP is deliberately not restarted
+    # with it — see RiskManager.bank_and_restart for why that asymmetry is the
+    # entire point. Off unless asked for.
+    auto_restart: bool = False
 
 
 @dataclass
@@ -226,6 +231,7 @@ class BotConfig:
         cfg.risk.base_stake = _f("BASE_STAKE", cfg.risk.base_stake)
         cfg.risk.daily_loss_cap = _f("DAILY_LOSS_CAP", cfg.risk.daily_loss_cap)
         cfg.risk.daily_profit_target = _f("DAILY_PROFIT_TARGET", cfg.risk.daily_profit_target)
+        cfg.risk.auto_restart = _b("AUTO_RESTART", cfg.risk.auto_restart)
 
         cfg.martingale.enabled = _b("MARTINGALE_ENABLED", cfg.martingale.enabled)
         cfg.martingale.multiplier = _f("MARTINGALE_MULTIPLIER", cfg.martingale.multiplier)
