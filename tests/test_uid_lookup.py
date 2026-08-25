@@ -174,3 +174,71 @@ def test_the_cookie_is_never_written_to_the_log():
 def test_a_lookup_with_no_error_is_the_only_one_that_proves_anything():
     assert Lookup(error="no internet").reached_site is False
     assert Lookup().reached_site is True
+
+
+# ------------------------------------------- a URL that is simply not there
+#
+# Pocket Option answers an unknown path with 404 and a full marketing page —
+# 126KB of it, saying "balance" and "cabinet" throughout. Every logged-IN marker
+# matches it. One dead URL in PAGES was therefore enough to set logged_in on
+# every lookup that ever ran, which made the "your cookie has expired" branch
+# unreachable and left the client being told his login was fine.
+NOT_FOUND = """
+<!doctype html><html><body>
+<h1>The Most Innovative Trading Platform</h1>
+<p>Trade with a $10,000 demo balance. Open your cabinet and start today.</p>
+</body></html>
+"""
+
+
+def _fetch_mixed(bodies: dict, statuses: dict, seen: list):
+    """Like _fetch_from, but the status is chosen per URL rather than implied."""
+    def fetch(url, session):
+        seen.append((url, session))
+        return statuses.get(url, 200), url, bodies.get(url, "")
+    return fetch
+
+
+def test_a_404_marketing_page_is_not_mistaken_for_being_logged_in():
+    seen = []
+    res = account_ids(ENCODED, fetch=_fetch_mixed(
+        {p: NOT_FOUND for p in uid_lookup.PAGES},
+        {p: 404 for p in uid_lookup.PAGES}, seen))
+    assert res.logged_in is False, \
+        "a page that does not exist was read as proof the cookie still works"
+    # And it must not be reported as an unreachable site either — the site
+    # answered, and "no internet" sends him somewhere else entirely.
+    assert res.error == ""
+
+
+def test_a_dead_url_alongside_a_login_redirect_still_reports_a_dead_cookie():
+    # The live arrangement as it actually was: two real pages that bounce a
+    # logged-out visitor to /en/login, and one URL that no longer exists. The
+    # dead one used to outvote the other two.
+    seen = []
+    said = []
+    pages = list(uid_lookup.PAGES)
+    res = account_ids(ENCODED, log=said.append, fetch=_fetch_mixed(
+        {pages[0]: LOGGED_OUT, pages[1]: LOGGED_OUT, pages[2]: NOT_FOUND},
+        {pages[2]: 404}, seen))
+    assert res.logged_in is False
+    assert any("does not recognise the saved cookie" in m for m in said), said
+
+
+def test_nothing_is_harvested_from_a_page_that_does_not_exist():
+    # A 404 body can contain any number at all. Ids off it would burn the whole
+    # five-attempt budget on numbers that were never account ids.
+    seen = []
+    body = NOT_FOUND + '<script>window.x={"uid":138033625}</script>'
+    res = account_ids(ENCODED, fetch=_fetch_mixed(
+        {p: body for p in uid_lookup.PAGES},
+        {p: 404 for p in uid_lookup.PAGES}, seen))
+    assert res.ids == []
+
+
+def test_every_page_asked_for_lives_under_the_cabinet():
+    # The dead URL was /en/profile/, a public path. Everything here has to be a
+    # page only a logged-in user can see, because that is what makes a redirect
+    # to the login page mean something.
+    for url in uid_lookup.PAGES:
+        assert "/cabinet/" in url, url

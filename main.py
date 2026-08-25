@@ -189,21 +189,22 @@ async def run(paper: bool) -> None:
             # terminal, and the whole point of the launcher icon is that nobody
             # is watching a terminal any more.
             web.log("The saved Pocket Option cookie could not be used, so the bot "
-                    "started in practice mode.")
+                    "started in practice mode.", connect=True)
             # First line only. These messages carry several paragraphs of
             # DevTools instructions for whoever is reading the terminal, and
             # dumping all of that into the panel would bury the one thing that
             # actually needs doing under the exact manual procedure the
             # one-click button exists to replace. The full text is in the
             # terminal log above for anyone who wants it.
-            web.log(f"Reason: {token_error.strip().splitlines()[0]}")
+            web.log(f"Reason: {token_error.strip().splitlines()[0]}", connect=True)
             # Before telling anybody to go and click something: the commonest
             # reason a saved cookie is refused is that it has no account id
             # beside it, and that is a question the bot can answer by itself.
             # Only fall back to instructions when there is nothing to search.
             if not web.connect_saved():
                 web.log("Send a fresh cookie with the one-click button and it "
-                        "will switch to your account — no restart needed.")
+                        "will switch to your account — no restart needed.",
+                        connect=True)
         shown = "localhost" if config.web_host in ("0.0.0.0", "") else config.web_host
         log.info("Control panel: http://%s:%s", shown, config.web_port)
         if not config.web_password and config.web_host == "0.0.0.0":

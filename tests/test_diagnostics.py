@@ -142,3 +142,71 @@ def test_the_panel_offers_the_button_and_does_not_ask_for_a_photo(server):
     # when localhost does not (penguin.linux.test) is not a secure context, so
     # navigator.clipboard is unavailable there and the box is the real path.
     assert "diagbox" in PAGE
+
+
+# ------------------------------------------------ the connection story survives
+#
+# The report shows the last 40 log lines. A running bot writes two per trade, so
+# on a busy pair those 40 lines cover about ninety seconds — while connecting
+# happens once, at start-up, and then writes nothing more. Every report pasted
+# so far has arrived with the trading in it and the connection answer gone: the
+# search result, the reason the cookie was refused, whether the bookmark was
+# even the current one. Those are the only lines that say what to do next, and
+# they were the only ones guaranteed to be missing.
+def test_the_reason_it_is_not_connected_survives_a_burst_of_trading(server):
+    server.log("Pocket Option does not recognise the saved cookie any more.",
+               connect=True)
+    for i in range(200):                     # ~100 trades' worth of noise
+        server.log(f"ENTRY PUT EURUSD_otc stake 1.00 exp 60s ({i})")
+        server.log(f"WIN +0.80 ({i})")
+
+    _, body = _report(server)
+    assert "does not recognise the saved cookie" in body, \
+        "the connection answer was scrolled away by the trading feed"
+    # And it is genuinely out of the trading log, not just still inside its 40.
+    tail = body.split("LAST 40 LOG LINES")[1]
+    assert "does not recognise the saved cookie" not in tail
+
+
+def test_the_connection_section_is_there_even_before_anything_is_tried(server):
+    _, body = _report(server)
+    assert "----- CONNECTION" in body
+    assert "has not tried to connect at all" in body
+
+
+def test_trading_lines_do_not_leak_into_the_connection_section(server):
+    server.log("Looking the account up now.", connect=True)
+    server.log("ENTRY PUT EURUSD_otc — bounced off support, no account id needed")
+    story = server.diagnostics().split("----- CONNECTION")[1] \
+                                .split("LAST 40 LOG LINES")[0]
+    assert "Looking the account up" in story
+    assert "ENTRY PUT" not in story, \
+        "the connection section is filling up with trades"
+
+
+def test_the_bookmark_version_is_reported(server):
+    # A bookmark saved in Chrome months ago cannot be seen any other way: an old
+    # one sends a perfectly good cookie and then silently cannot do the watching
+    # step, so from the server's side it is identical to a current one.
+    _, body = _report(server)
+    assert "no cookie sent on this run" in body
+
+    server.bookmark_note = "OLD version — it cannot watch for your account id."
+    _, body = _report(server)
+    assert "OLD version" in body
+
+
+def test_the_connection_section_is_scrubbed_too(server):
+    # It is the section most likely to quote something that came off the wire.
+    from core.ssid import session_value
+    server.log("Cookie not accepted: " + session_value(SECRET), connect=True)
+    _, body = _report(server)
+    assert "DEADBEEFCAFEBABE" not in body
+
+
+def test_the_story_does_not_grow_without_limit(server):
+    for i in range(200):
+        server.log(f"searching {i}", connect=True)
+    assert len(server._connect_log) <= 24
+    _, body = _report(server)
+    assert "searching 199" in body

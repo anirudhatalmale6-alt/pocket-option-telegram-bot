@@ -105,18 +105,50 @@ class WebInterface:
         # against. Never written to disk; a restart correctly forgets it.
         self._last_session = ""
         self._seen_uids: dict = {}  # id -> when it was last acted on
+        # A second, much smaller log holding ONLY the connection story.
+        #
+        # The main feed is a ring of 300 and the report shows the last 40 of it.
+        # A running bot writes two lines per trade, so on a busy pair those 40
+        # lines cover about ninety seconds — and connecting happens once, at
+        # start-up. Every report he has pasted so far has had the trading in it
+        # and the answer scrolled off the top: the search result, the reason the
+        # cookie was refused, whether the bookmark was even the current one.
+        # Those are the lines that say what to do next, and they were the only
+        # ones guaranteed to be missing. So they are kept apart, where nothing
+        # the trader does can push them out.
+        self._connect_log: List[dict] = []
+        # Which generation of bookmark last sent a cookie. An old one still
+        # sends a perfectly good cookie and then silently cannot do the
+        # watching, so from the outside it looks identical to a current one.
+        self.bookmark_note = ""
 
     # ------------------------------------------------------------ notifier
     async def send(self, text: str) -> None:
         """Trader notifier. Same signature as the Telegram one, so it drops in."""
         self.log(text)
 
-    def log(self, text: str) -> None:
+    def log(self, text: str, connect: bool = False) -> None:
+        """
+        One line into the panel's feed. `connect=True` also files it under the
+        connection story — see _connect_log.
+
+        A flag at the call site rather than matching words in the text. The
+        obvious shortcut is to look for "cookie" or "account" in every line, and
+        that quietly picks up "Account details saved" alongside "no account is
+        at that price level", which is a trade. The caller knows; the text does
+        not.
+        """
         line = {"ts": time.time(), "text": text}
         with self._lock:
             self._log.append(line)
             if len(self._log) > 300:      # keep memory flat on a 24/7 box
                 del self._log[:-300]
+            if connect:
+                self._connect_log.append(line)
+                # Bigger than it needs to be for one attempt, small enough that
+                # a week of restarts cannot bury today's.
+                if len(self._connect_log) > 24:
+                    del self._connect_log[:-24]
         # Mirror to stdout so the VPS log tells the same story as the page.
         print(f"[bot] {text}", flush=True)
 
@@ -339,6 +371,28 @@ class WebInterface:
                f"{v['lo']}% and {v['hi']}%" if v.get("n") else " (no trades yet)"),
             f"checks made     {s['checks']}",
             f"last look       {clean(s['last_reason']) or '—'}",
+        ]
+
+        # ------------------------------------------------- connection story
+        #
+        # Above the trading log, and kept out of it. Connecting happens once at
+        # start-up and then writes nothing; trading writes two lines a trade.
+        # By the time a report is taken, the forty lines below cover the last
+        # minute or two of trades and the reason he is not on his account —
+        # which is the entire question — went past long ago. Every report so
+        # far has arrived in exactly that state.
+        with self._lock:
+            story = list(self._connect_log)
+        out += [
+            "",
+            "----- CONNECTION (kept apart, trading cannot scroll this away) -----",
+            f"bookmark        {self.bookmark_note or 'no cookie sent on this run'}",
+        ]
+        out += [f"{time.strftime('%H:%M:%S', time.localtime(x['ts']))}  "
+                f"{clean(x['text'])}" for x in story] or \
+               ["(nothing — the bot has not tried to connect at all)"]
+
+        out += [
             "",
             "----- LAST 40 LOG LINES (newest first) -----",
         ]
@@ -456,13 +510,23 @@ class WebInterface:
         # server, so both post a uids field, and the difference lives in the
         # fragment the bookmark itself produced. Hence a flag rather than an
         # inference from the list being empty.
+        # Written down, not only logged. Which generation of bookmark sent the
+        # cookie decides whether the watching step can happen at all, and it is
+        # a fact about a bookmark saved in Chrome months ago — nothing else in
+        # the report can reveal it, and it does not change until he re-drags it.
+        if trusted:
+            self.bookmark_note = ("OLD version — it cannot watch for your "
+                                  "account id. Re-drag the blue button."
+                                  if body.get("stale") else
+                                  f"current version, sent {len(candidates)} "
+                                  f"account id(s) off the page")
         if trusted and body.get("stale"):
             self.log("Note: that bookmark is an older version. It sent the "
                      "cookie fine, but it cannot watch the Pocket Option page "
                      "for your practice account — which is the step that has "
                      "been failing. Drag the blue button on this page onto "
                      "your bookmarks bar again, delete the old bookmark, and "
-                     "use the new one.")
+                     "use the new one.", connect=True)
 
         # Validate BEFORE writing anything. ssid.normalise knows the difference
         # between the trading token and the chart token that gets copied by
@@ -478,7 +542,7 @@ class WebInterface:
             # wrong home for several lines of instructions — it was reported as
             # "the message that pops up is only for a short time period", and by
             # then the only copy of the explanation had gone.
-            self.log(f"Cookie not accepted: {exc}")
+            self.log(f"Cookie not accepted: {exc}", connect=True)
             return {"ok": False, "message": str(exc)}
 
         # Save straight away ONLY when an id was typed in THIS request, so a
@@ -555,12 +619,12 @@ class WebInterface:
         if not session:
             self.log(f"The Pocket Option page just offered account id {uid}, "
                      "but no cookie has been sent yet. Click the bookmark on "
-                     "the Pocket Option tab and this id will be used with it.")
+                     "the Pocket Option tab and this id will be used with it.", connect=True)
             return "no cookie yet"
 
         which = "practice" if demo else "real-money"
         self.log(f"The Pocket Option page just handed over a {which} account "
-                 f"id ({uid}). Trying it now — no need to touch anything.")
+                 f"id ({uid}). Trying it now — no need to touch anything.", connect=True)
         # demo=True always: this route exists to find the PRACTICE account, and
         # a search asked for practice can never save a real-money one. Even an
         # id the page labelled real-money is worth trying as practice — being
@@ -602,7 +666,7 @@ class WebInterface:
         with self._lock:
             self._last_session = session
         self.log("There is a saved cookie but no account id. Looking the account "
-                 "up now — nothing for you to click.")
+                 "up now — nothing for you to click.", connect=True)
         self._discover_async(session, c.po_uid, c.po_demo, [], via="startup")
         return True
 
@@ -643,7 +707,7 @@ class WebInterface:
         self.token_error = ""       # a new cookie retires the old complaint
         # Never log the token itself — this feed is on screen and in the logs.
         self.log(f"Account details saved (uid {uid}, "
-                 f"{'DEMO' if demo else 'LIVE'}). Reconnecting…")
+                 f"{'DEMO' if demo else 'LIVE'}). Reconnecting…", connect=True)
 
         if self.reload_cb is None:
             return {"ok": True, "message": "Saved to .env. Restart the bot to connect: "
@@ -670,7 +734,7 @@ class WebInterface:
         def work() -> None:
             import asyncio as _aio
             from .discover import find_account
-            self.log("Working out which Pocket Option account this cookie opens…")
+            self.log("Working out which Pocket Option account this cookie opens…", connect=True)
 
             # Ask Pocket Option's own website for the account id before trying
             # anything. The cookie IS a login, so the site will answer as him —
@@ -682,7 +746,7 @@ class WebInterface:
             ids = list(candidates or [])
             try:
                 from .uid_lookup import account_ids
-                found_ids = account_ids(session, log=self.log)
+                found_ids = account_ids(session, log=self._connect_note)
                 for value in found_ids.ids:
                     if value not in ids:
                         ids.append(value)
@@ -690,7 +754,7 @@ class WebInterface:
                 # Never fatal. This is an extra source of guesses, and the old
                 # routes still work without it.
                 self.log(f"Could not ask the website for the account id "
-                         f"({type(exc).__name__}). Carrying on with what we have.")
+                         f"({type(exc).__name__}). Carrying on with what we have.", connect=True)
 
             # How many REAL account ids this search gets to try. uid 0 is always
             # in the list and is not one of them — it is the "maybe the cookie is
@@ -702,15 +766,26 @@ class WebInterface:
 
             try:
                 found = _aio.run(find_account(session, uid_hint=uid,
-                                              demo_hint=demo, log=self.log,
+                                              demo_hint=demo, log=self._connect_note,
                                               candidates=ids))
             except Exception as exc:
-                self.log(f"Could not check the account: {type(exc).__name__}: {exc}")
+                self.log(f"Could not check the account: {type(exc).__name__}: {exc}", connect=True)
                 found = None
             self._apply_discovery(found, session, demo, ids_tried, via)
 
         threading.Thread(target=work, daemon=True,
                          name="po-account-discovery").start()
+
+    def _connect_note(self, text: str) -> None:
+        """
+        log(connect=True) as a plain one-argument logger.
+
+        uid_lookup and discover both take a `log` callable and know nothing
+        about this class. Handing them self.log directly is what put their
+        output — the only lines that ever say WHY a search failed — into the
+        trading feed, where ninety seconds of trades scroll it away.
+        """
+        self.log(text, connect=True)
 
     def _forget_account_id(self) -> None:
         """
@@ -729,7 +804,7 @@ class WebInterface:
         self.config.po_uid = 0
         self.log("Clearing the saved account id — it is not this account's, so "
                  "the next attempt will search from scratch instead of "
-                 "repeating it.")
+                 "repeating it.", connect=True)
 
     def _apply_discovery(self, found, session: str, demo: bool,
                          ids_tried: int = 0, via: str = "") -> None:
@@ -770,7 +845,7 @@ class WebInterface:
                          "longer valid, not that the account id is wrong. "
                          "Log in to pocketoption.com, copy a FRESH "
                          "ci_session cookie, paste it here — and do not log "
-                         "out afterwards, because logging out kills it.")
+                         "out afterwards, because logging out kills it.", connect=True)
                 return
 
             # Nothing but uid 0 was ever tried, and uid 0 has never once been
@@ -794,7 +869,7 @@ class WebInterface:
                          "Pocket Option tab, click the Demo/Real switch once "
                          "(or just leave it open a minute), then click the "
                          "bookmark again. That second click is the one that "
-                         "finds it.")
+                         "finds it.", connect=True)
             elif via == "startup":
                 self.log(f"⚠️ The cookie saved in your settings could not get in "
                          f"({size}), and Pocket Option's website did not give up "
@@ -802,7 +877,7 @@ class WebInterface:
                          "means the cookie has expired — a cookie dies when you "
                          "log out, and after a while on its own. Open "
                          "pocketoption.com, log in, click the blue bookmark, and "
-                         "do not log out afterwards.")
+                         "do not log out afterwards.", connect=True)
             else:
                 self.log(f"⚠️ Could not get in ({size}) — but this does not "
                          "mean your cookie is bad. A pasted cookie carries no "
@@ -811,7 +886,7 @@ class WebInterface:
                          "to work either way. Use the blue bookmark button on "
                          "this page instead of pasting: it reads the account "
                          "id off the Pocket Option page as well as the "
-                         "cookie, which is the part that is missing here.")
+                         "cookie, which is the part that is missing here.", connect=True)
             return
 
         if not found.matches_request:
@@ -824,12 +899,12 @@ class WebInterface:
             asked = "practice" if demo else "real money"
             self.log(f"⚠️ Your {found.label} answers, but your {asked} account "
                      f"does not. Nothing has been saved and the bot is NOT "
-                     f"connected to it.")
+                     f"connected to it.", connect=True)
             if demo:
                 self.log("Open pocketoption.com and switch to the demo balance "
                          "there (top right), then click the bookmark again — "
                          "that usually wakes the demo account up. I have "
-                         "deliberately not connected you to real money.")
+                         "deliberately not connected you to real money.", connect=True)
             if self.config.po_ssid:
                 # Refusing to save leaves the trader on whatever was saved
                 # BEFORE, which is usually a stale cookie sitting at -1.00 with
@@ -838,18 +913,18 @@ class WebInterface:
                 # the cookie just sent — it is not. Say whose number it is.
                 self.log("Note: any balance or connection warning below this is "
                          "about the cookie that was saved BEFORE, not the one "
-                         "you just sent. Yours was not used.")
+                         "you just sent. Yours was not used.", connect=True)
             return
 
         if found.balance > 0:
             self.log(f"✓ Found it — your {found.label}, "
-                     f"balance {found.balance:,.2f}.")
+                     f"balance {found.balance:,.2f}.", connect=True)
         else:
             self.log(f"✓ Pocket Option accepted your {found.label}, but there "
-                     f"is no money in it.")
+                     f"is no money in it.", connect=True)
         res = self._save_account(session, found.uid, found.demo)
         if not res.get("ok"):
-            self.log(res.get("message", "Could not save the account details."))
+            self.log(res.get("message", "Could not save the account details."), connect=True)
 
     # ------------------------------------------------------------ commands
     def command(self, body: dict) -> dict:
@@ -912,11 +987,11 @@ class WebInterface:
                          "WILL NOT MOVE. To trade your real demo account, send "
                          "your cookie with the blue bookmark above."
                          + (f" (The cookie you sent was refused: {self.token_error})"
-                            if self.token_error else ""))
+                            if self.token_error else ""), connect=True)
             elif c.po_demo:
                 self.log("This is your Pocket Option DEMO account — real trades "
                          "on their server, practice money. Your demo balance "
-                         "will move.")
+                         "will move.", connect=True)
             # Say what it is doing and roughly how long a quiet spell is normal.
             # Without this, a selective strategy looks identical to a dead bot.
             pairs = c.watched()
@@ -1549,7 +1624,11 @@ PAGE = r"""<!doctype html>
         <div class="sub">Pocket Option gives your DEMO and your REAL balance
           <b>different</b> ids, and the wrong one is refused in silence. So you no
           longer have to find it: leave this blank and the panel tries each
-          combination against your cookie and keeps whichever one answers.</div></div>
+          combination against your cookie and keeps whichever one answers.
+          <br><b>If the bot already has your cookie</b> and only the id is
+          missing, type it here <b>on its own</b> and press Save &amp; connect —
+          leave the cookie box empty. Pocket Option shows the number on its own
+          page: click your name at the top right, it is the digits under it.</div></div>
       <div>
         <label>Which balance</label>
         <div class="row"><input type="checkbox" id="f-demo" checked><label for="f-demo">Demo — practice money (recommended)</label></div>
@@ -2213,9 +2292,38 @@ function addPair(symbol){
   toast(symbol + ' added — now ' + have.length + '. Press Save settings to use them.');
 }
 
+// An account id on its own, tried against the cookie the bot already holds.
+//
+// This form used to refuse anything without a cookie in the box, which made the
+// id field beside it unusable in the one situation it was needed for. The whole
+// stuck state on this project is a GOOD cookie and a missing id: the bookmark
+// delivers the cookie every time, and the id — which lives only in a WebSocket
+// frame — is what nothing can reach. Being told "paste the cookie first" when
+// the bot is already holding one, and the only thing missing is the number
+// Pocket Option prints on its own profile page, is a dead end for no reason.
+async function tryUidAlone(u){
+  try{
+    // The same route the listener on the Pocket Option page uses. It answers
+    // with an image, so there is nothing to read — the account search it starts
+    // reports into the log below, which is where the answer belongs anyway.
+    await fetch('/uid?id=' + encodeURIComponent(u) + '&demo=1');
+    toast('Trying account ' + u + ' with the cookie the bot already has — ' +
+          'watch the log at the bottom.');
+  }catch(e){
+    toast('The panel is not answering. Is the terminal window still open?', true);
+  }
+}
+
 function saveAccount(){
   const s = document.getElementById('f-session').value.trim();
-  if (!s){ toast('Paste the ci_session cookie first.', true); return; }
+  if (!s){
+    const u = document.getElementById('f-uid').value.trim();
+    if (/^[0-9]{6,13}$/.test(u)){ tryUidAlone(u); return; }
+    toast('Paste the ci_session cookie first.\n\nOr, if the bot already has ' +
+          'your cookie and only the account id is missing, type just the id ' +
+          'in the box above and press this again.', true);
+    return;
+  }
   const demo = document.getElementById('f-demo').checked;
   if (!demo && !confirm('Save this as your REAL money account?\n\n' +
       'No strategy in this bot has yet beaten its break-even line on real data. ' +

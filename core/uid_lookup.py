@@ -47,7 +47,10 @@ from urllib.parse import quote
 PAGES = (
     "https://pocketoption.com/en/cabinet/",
     "https://pocketoption.com/en/cabinet/demo-quick-high-low/",
-    "https://pocketoption.com/en/profile/",
+    # Was /en/profile/, which does not exist. See DEAD below — a URL that 404s
+    # is not merely useless here, it actively broke the one message this
+    # module was written to be able to give.
+    "https://pocketoption.com/en/cabinet/profile/",
 )
 
 TIMEOUT = 12.0
@@ -80,6 +83,18 @@ _ID_PATTERNS: Tuple[re.Pattern, ...] = (
     re.compile(r'data-(?:uid|user-?id|account-?id)\s*=\s*"(\d{6,12})"', re.I),
     re.compile(r'/(?:profile|user|trader|cabinet)/(\d{6,12})(?!\d)', re.I),
 )
+
+# Statuses meaning "this URL does not exist", which is a completely different
+# thing from "you are not logged in" and must not be read as either answer.
+#
+# Checked against the live site rather than assumed, and the result is why this
+# exists: pocketoption.com answers an unknown path with 404 AND a 126KB
+# marketing page that says "balance" and "cabinet" all over it. Every one of the
+# logged-IN markers below matches it. So a single dead URL in PAGES was enough
+# to set logged_in on every lookup anybody ever ran — which made the "your
+# cookie has expired, go and fetch a fresh one" branch unreachable, and left the
+# client being told his login was fine and there was nothing for him to do.
+DEAD = frozenset((404, 410))
 
 # Markers that say "this page was served to somebody who is logged IN".
 _IN_MARKERS = ("cabinet", "logout", "sign-out", "balance", "demo-quick-high-low")
@@ -223,6 +238,11 @@ def account_ids(session: str, log: Optional[Callable[[str], None]] = None,
         if status == 0 and not body:
             continue                     # could not reach this one; try the next
         reached = True
+        if status in DEAD:
+            # The site answered, so it is up — but this URL is gone, and a page
+            # that does not exist says nothing about who asked for it. Not
+            # logged in, not logged out, and nothing on it worth harvesting.
+            continue
         if _logged_in(final_url, body):
             result.logged_in = True
         for value in harvest(body):
