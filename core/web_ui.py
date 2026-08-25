@@ -44,6 +44,12 @@ STRATEGY_CHOICES = [
     ("ai", "AI reads the setup — needs your own API key, costs per trade"),
     ("momentum", "Momentum 10 — trade the turn at the top/bottom of its range"),
     ("momentum_follow", "Momentum 10 — REVERSED (follow the push instead)"),
+    # The distinguishing words come FIRST on these two. The closed dropdown cuts
+    # the label off at about twenty characters, and "Momentum + Stochastic at
+    # support/resistance..." is identical across both for far longer than that —
+    # so the box would have shown the same thing whichever was running.
+    ("momentum_sr", "ALL 3 agree — Momentum + Stochastic at support/resistance"),
+    ("momentum_sr_any", "2 of 3 — S/R level plus Momentum or Stochastic (more trades)"),
     ("sr", "Support & resistance — bounce off the level"),
     ("sr_fade", "Support & resistance — REVERSED (bet the level breaks)"),
     ("sr_break", "Support & resistance — trade the breakout"),

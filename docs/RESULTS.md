@@ -17,7 +17,7 @@ every row, so no result can be quoted again without the evidence behind it.
 
 ## The full table
 
-Real EUR/USD history, four timeframes, twelve strategies, one-candle expiry.
+Real EUR/USD history, four timeframes, fourteen strategies, one-candle expiry.
 Payout assumed 80%, so break-even is 55.6%. Ties (entry price == expiry price)
 are refunded by Pocket Option, so they are excluded from the win rate and shown
 separately.
@@ -31,6 +31,8 @@ separately.
   5m              rsi     205     85     41.5%         35-48%  no edge
   5m    momentum_turn     388    151     56.4%         51-61%  unproven
   5m  momentum_follow     388    151     43.6%         39-49%  no edge
+  5m      mom_sr_all3      21      4     47.6%         28-68%  inconclusive
+  5m    mom_sr_either      64     25     45.3%         34-57%  inconclusive
   5m        sr_bounce     449    185     43.4%         39-48%  no edge
   5m         sr_break       5      1      0.0%         -0-43%  inconclusive
   5m          sr_fade     449    185     56.6%         52-61%  unproven
@@ -44,6 +46,8 @@ separately.
  15m              rsi     217     55     53.5%         47-60%  unproven
  15m    momentum_turn     322     68     52.8%         47-58%  unproven
  15m  momentum_follow     322     68     47.2%         42-53%  no edge
+ 15m      mom_sr_all3      31     14     58.1%         41-74%  inconclusive
+ 15m    mom_sr_either     135     55     47.4%         39-56%  unproven
  15m        sr_bounce     772    196     46.8%         43-50%  no edge
  15m         sr_break      41      7     43.9%         30-59%  inconclusive
  15m          sr_fade     772    196     53.2%         50-57%  unproven
@@ -57,6 +61,8 @@ separately.
  30m              rsi     117     16     48.7%         40-58%  unproven
  30m    momentum_turn     178     14     52.2%         45-59%  unproven
  30m  momentum_follow     178     14     47.8%         41-55%  no edge
+ 30m      mom_sr_all3      16      4     43.8%         23-67%  inconclusive
+ 30m    mom_sr_either      85     14     51.8%         41-62%  inconclusive
  30m        sr_bounce     500     69     47.8%         43-52%  no edge
  30m         sr_break      43      3     48.8%         35-63%  inconclusive
  30m          sr_fade     500     69     52.2%         48-57%  unproven
@@ -70,6 +76,8 @@ separately.
   1h              rsi     148     10     56.8%         49-64%  unproven
   1h    momentum_turn     214     22     53.7%         47-60%  unproven
   1h  momentum_follow     214     22     46.3%         40-53%  no edge
+  1h      mom_sr_all3      24      4     45.8%         28-65%  inconclusive
+  1h    mom_sr_either     110     11     52.7%         43-62%  unproven
   1h        sr_bounce     523     48     49.3%         45-54%  no edge
   1h         sr_break      96      6     44.8%         35-55%  inconclusive
   1h          sr_fade     523     48     50.7%         46-55%  no edge
@@ -78,10 +86,10 @@ separately.
   1h         donchian     286     24     44.4%         39-50%  no edge
 ```
 
-**0 of 48 combinations clear break-even at an 80% payout. Exactly one does at
+**0 of 56 combinations clear break-even at an 80% payout. Exactly one does at
 92%** — `custom` on 15m, 61.8% over 131 trades — and the same strategy on the
 next timeframe up wins 39.1%. A real edge does not do that; that is noise
-changing sign, and it is the reason one green row in forty-eight is not a
+changing sign, and it is the reason one green row in fifty-six is not a
 finding. Nineteen rows are outright losing. The rest are "unproven": the data
 cannot tell them apart from a coin toss.
 
@@ -126,6 +134,52 @@ Two caveats specific to this one:
    account.
 2. **This is real EUR/USD, not Pocket Option's OTC pairs**, which are synthetic
    and behave differently by design.
+
+## "Momentum plus the oscillator at S/R" — your combination, measured
+
+Your idea: momentum and an oscillator together, taken at a support or resistance
+level. It is built and both strictnesses are on the dropdown. Here is what the
+data says about the belief underneath it, which is the part worth paying
+attention to.
+
+**The design decision.** If all three had to *happen* on the same candle —
+momentum crossing into its zone, Stochastic crossing into its zone, and price
+arriving at a level, all inside the same sixty seconds — it would fire perhaps
+once a week. So the level is the **trigger** and the other two are
+**confirmations**: price is rejected by a level, and the trade is only taken if
+momentum is stretched the same way and Stochastic agrees. Rare is the point.
+Never is not.
+
+**What it costs.** On the same 5-minute data where `momentum_turn` took 388
+trades, `mom_sr_all3` took **21**. That is eighteen times rarer. Across all four
+timeframes it managed 92 trades in total, against 1,102 for Momentum alone.
+
+**What it bought.** Nothing measurable:
+
+```
+        strategy   5m    15m    30m     1h
+   momentum_turn  56.4%  52.8%  52.2%  53.7%     (388, 322, 178, 214 trades)
+     mom_sr_all3  47.6%  58.1%  43.8%  45.8%     ( 21,  31,  16,  24 trades)
+   mom_sr_either  45.3%  47.4%  51.8%  52.7%     ( 64, 135,  85, 110 trades)
+```
+
+Not one of those clears the 55.6% break-even. The 58.1% on 15m is the kind of
+number that gets a strategy adopted, and it should not be: it is 18 wins out of
+31, its interval runs 41–74%, and the same rule on the next timeframe up wins
+43.8%. Eighteen wins is what a coin does on a good afternoon.
+
+**The pattern this belongs to.** Every "make it agree with more things" variant
+on this project does the same thing — `confluence`, the earlier three-way vote,
+fired 20, 31, 16 and 19 times and won 50.0%, 54.8%, 6.2% and 31.6%. Adding
+conditions removes trades much faster than it improves accuracy, and it removes
+the one thing you cannot buy back: the sample size that would let you ever know
+whether it works. A rule that fires 21 times in months of data cannot be told
+apart from luck no matter how good the 21 look.
+
+That is not proof your idea is wrong. It is proof that this test cannot tell,
+and that it has been made permanently harder to tell. If you want to run it
+anyway, `momentum_sr_any` (the level plus *either* confirmation) at least trades
+often enough to produce an answer this decade.
 
 ## Support and resistance, since you asked
 

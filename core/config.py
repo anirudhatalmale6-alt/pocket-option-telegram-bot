@@ -23,6 +23,7 @@ from .rsi_strategy import RsiSettings
 from .confluence_strategy import ConfluenceSettings
 from .sr_strategy import SrSettings
 from .momentum_strategy import MomentumSettings
+from .momentum_sr_strategy import MomentumSrSettings
 from .ai_strategy import AiSettings
 
 load_dotenv()  # read a local .env if present
@@ -151,6 +152,9 @@ class BotConfig:
     #   "sr" / "sr_break" / "sr_fade" -> support & resistance (core/sr_strategy.py)
     #   "momentum" / "momentum_follow" -> Momentum(10) at the top/bottom of its
     #       own recent range (core/momentum_strategy.py)
+    #   "momentum_sr" / "momentum_sr_any" -> client's own combination: a support
+    #       or resistance level, confirmed by momentum and by Stochastic
+    #       (core/momentum_sr_strategy.py)
     strategy_mode: str = "pullback"
 
     strategy: StrategySettings = field(default_factory=StrategySettings)
@@ -161,6 +165,7 @@ class BotConfig:
     confluence: ConfluenceSettings = field(default_factory=ConfluenceSettings)
     sr: SrSettings = field(default_factory=SrSettings)
     momentum: MomentumSettings = field(default_factory=MomentumSettings)
+    momentum_sr: MomentumSrSettings = field(default_factory=MomentumSrSettings)
     ai: AiSettings = field(default_factory=AiSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)

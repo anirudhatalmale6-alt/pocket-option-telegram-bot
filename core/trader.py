@@ -16,6 +16,7 @@ next cycle because everything reads from the shared config object.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import time
 import traceback
 from typing import Awaitable, Callable, Dict, Optional
@@ -31,6 +32,7 @@ from .rsi_strategy import RsiStrategy
 from .confluence_strategy import ConfluenceStrategy
 from .sr_strategy import SrStrategy
 from .momentum_strategy import MomentumStrategy
+from .momentum_sr_strategy import MomentumSrStrategy
 from .ai_strategy import AiStrategy
 from . import plugins
 
@@ -71,6 +73,23 @@ def build_evaluator(config: BotConfig):
         # the panel always says which of the two is running.
         config.momentum.fade = (mode == "momentum_follow")
         return MomentumStrategy(config.momentum)
+    if mode in ("momentum_sr", "momentum_sr_any"):
+        # The client's own combination: a support/resistance level confirmed by
+        # momentum and by Stochastic. Strict = all three; _any = the level plus
+        # either one.
+        #
+        # The momentum half is taken from the SAME settings the Momentum panel
+        # box edits, so changing the length or the percentage there applies here
+        # too. A copy of its own would leave that box silently doing nothing
+        # while this strategy runs, which is indistinguishable from a broken
+        # control. Only require_cross differs, and only because here momentum is
+        # a confirmation ("is it stretched?") rather than the trigger.
+        config.momentum_sr.momentum = dataclasses.replace(
+            config.momentum, require_cross=False, fade=False)
+        config.momentum_sr.sr = dataclasses.replace(
+            config.sr, mode="bounce", fade=False)
+        config.momentum_sr.require_all = (mode == "momentum_sr")
+        return MomentumSrStrategy(config.momentum_sr)
     if mode == "ai":
         # The AI never runs alone. A cheap local strategy decides which candles
         # are worth paying to ask about; without that the model is asked on

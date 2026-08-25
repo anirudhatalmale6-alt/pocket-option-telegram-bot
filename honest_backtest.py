@@ -37,6 +37,7 @@ from core.alligator_strategy import AlligatorSettings, AlligatorStrategy
 from core.confluence_strategy import ConfluenceSettings, ConfluenceStrategy
 from core.custom_strategy import CustomSettings, CustomStrategy
 from core.momentum_strategy import MomentumSettings, MomentumStrategy
+from core.momentum_sr_strategy import MomentumSrSettings, MomentumSrStrategy
 from core.rsi_strategy import RsiSettings, RsiStrategy
 from core.sr_strategy import SrSettings, SrStrategy
 from core.strategy import Candle, Direction, Strategy, StrategySettings
@@ -65,6 +66,10 @@ STRATEGIES: Dict[str, Callable[[], object]] = {
     # they are opposite bets and picking one for him would hide the choice.
     "momentum_turn": lambda: MomentumStrategy(MomentumSettings()),
     "momentum_follow": lambda: MomentumStrategy(MomentumSettings(fade=True)),
+    # The client's own combination. Both strictnesses are measured, because
+    # how OFTEN it fires decides whether the win rate can ever mean anything.
+    "mom_sr_all3": lambda: MomentumSrStrategy(MomentumSrSettings()),
+    "mom_sr_either": lambda: MomentumSrStrategy(MomentumSrSettings(require_all=False)),
     # The client's own idea, both readings of it. They are opposite trades, so
     # they are listed separately rather than one being picked for him.
     "sr_bounce": lambda: SrStrategy(SrSettings(mode="bounce")),
