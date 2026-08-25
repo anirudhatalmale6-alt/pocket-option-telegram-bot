@@ -28,6 +28,7 @@ from typing import List, Optional
 
 from . import version
 from .config import BotConfig
+from .ssid import session_value
 from .stats import verdict
 
 # Strategy modes offered in the dropdown, with a plain-English label so a
@@ -231,6 +232,91 @@ class WebInterface:
             "trades": trades,
             "log": log,
         }
+
+    # ---------------------------------------------------------- diagnostics
+    def diagnostics(self) -> str:
+        """
+        Everything I need to explain a stuck panel, as plain text he can paste.
+
+        Every report so far has arrived as a photograph of a laptop screen, at
+        an angle, cropped. Five separate times the one field that would have
+        settled the question was outside the frame — the connection badge twice,
+        the profit target three times — and each miss cost a day of round trips.
+        The screen holds the answer; the camera is the part that keeps failing.
+
+        So: the same facts as text. No cropping, no angle, no asking him to
+        scroll to a particular card and try again.
+
+        It carries settings and log lines, so it is written to be safe to paste
+        into a chat window with me in it. The session cookie is a password and
+        is never included — only whether one is set and how long it is. The log
+        is scrubbed on the way out as a second line of defence: the lines are
+        written not to contain it, and this does not trust that.
+        """
+        s = self.state()
+        c = self.config
+        secret = session_value(c.po_ssid or "")
+
+        def clean(text) -> str:
+            text = str(text or "")
+            if secret and len(secret) > 8 and secret in text:
+                return text.replace(secret, "[cookie removed]")
+            return text
+
+        when = time.strftime("%Y-%m-%d %H:%M:%S")
+        mode = s["mode"]
+        v = s["verdict"] if isinstance(s["verdict"], dict) else {}
+        out = [
+            "----- POCKET OPTION BOT — DIAGNOSTICS -----",
+            f"time            {when}",
+            f"version         {s['version'] or 'unknown'}"
+            + ("  (NEWER CODE IS ON DISK — restart the bot)" if s["stale_code"] else ""),
+            f"mode            {mode}"
+            + ("   <-- SIMULATOR. No account, no money, nothing sent to Pocket Option."
+               if mode == "PRACTICE" else ""),
+            f"running         {'yes' if s['running'] else 'no'}",
+            f"connected       {'yes' if s['connected'] else 'no'}",
+            # Length only, never the value. The length alone tells me whether he
+            # pasted a whole cookie, a truncated one, or the wrong field.
+            f"cookie          {str(len(secret)) + ' characters' if secret else 'NOT SET'}",
+            f"cookie refused  {clean(s['token_error']) if s['token_error'] else 'no'}",
+            f"account id      {s['uid'] or 'not set (it works this out)'}",
+            f"which balance   {'demo' if s['demo'] else 'REAL MONEY'}",
+            f"balance         {'—' if s['balance'] is None else format(s['balance'], '.2f')}",
+            "",
+            f"strategy        {s['strategy']}",
+            f"pairs           {', '.join(s['pairs']) or s['asset']}",
+            f"stake           {s['stake']}",
+            f"expiry          {s['expiry']}s"
+            + (f"   (practice really settles {max(1, round(s['expiry'] / s['practice_candle'])) * s['practice_candle']}s)"
+               if mode == "PRACTICE" and s["practice_candle"]
+               and max(1, round(s["expiry"] / s["practice_candle"])) * s["practice_candle"] != s["expiry"]
+               else ""),
+            f"candle size     {s['timeframe']}s"
+            + (f"   (practice replays {s['practice_candle']}s)"
+               if s["practice_candle"] and s["practice_candle"] != s["timeframe"] else ""),
+            f"stop on loss    {s['loss_cap']}",
+            f"stop on profit  {s['profit_target']}"
+            + ("   (0 = off, it keeps going)" if not s["profit_target"] else ""),
+            f"martingale      {'ON x' + str(s['mg_mult']) + ', ' + str(s['mg_steps']) + ' steps'
+                               if s['mg_enabled'] else 'off'}",
+            "",
+            f"today           P/L {s['pnl']:+.2f}, {s['wins']} won, {s['losses']} lost",
+            f"win rate        {s['winrate']:.1f}%  (needs {s['breakeven']:.1f}% to break even)",
+            # The verdict is a dict of the confidence interval; pasted raw it was
+            # an unreadable line of Python. Flattened to the sentence it means.
+            f"verdict         {v.get('state', '?')}"
+            + (f" — {v['n']} decided trades, true rate somewhere between "
+               f"{v['lo']}% and {v['hi']}%" if v.get("n") else " (no trades yet)"),
+            f"checks made     {s['checks']}",
+            f"last look       {clean(s['last_reason']) or '—'}",
+            "",
+            "----- LAST 40 LOG LINES (newest first) -----",
+        ]
+        out += [f"{time.strftime('%H:%M:%S', time.localtime(x['ts']))}  "
+                f"{clean(x['text'])}" for x in s["log"][:40]] or ["(nothing yet)"]
+        out.append("----- END -----")
+        return "\n".join(out)
 
     # -------------------------------------------------------------- payouts
     def payouts(self) -> dict:
@@ -988,6 +1074,15 @@ class WebInterface:
                         self._json(401, {"error": "unauthorised"})
                         return
                     self._json(200, iface.payouts())
+                elif path == "/api/diagnostics":
+                    # Behind the password like any other reading of the
+                    # settings: it says which pairs, what stake, and how much
+                    # is being risked. It never carries the cookie itself.
+                    if not self._authed():
+                        self._json(401, {"error": "unauthorised"})
+                        return
+                    self._send(200, iface.diagnostics().encode(),
+                               "text/plain; charset=utf-8")
                 else:
                     self._send(404, b"Not found", "text/plain")
 
@@ -1153,6 +1248,10 @@ PAGE = r"""<!doctype html>
         border-radius:8px;padding:8px 11px;margin:8px 0 0;font-size:13.5px;
         line-height:1.5;color:#fde68a}
   .warn b{color:#fff}
+  #diagbox{width:100%;height:220px;margin-top:12px;resize:vertical;
+           background:var(--panel2);border:1px solid var(--line);border-radius:8px;
+           padding:10px;color:var(--text);font:12px/1.45 ui-monospace,monospace;
+           white-space:pre;overflow:auto}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
         padding:16px;margin-bottom:16px}
   .card h2{font-size:13px;text-transform:uppercase;letter-spacing:.06em;
@@ -1401,6 +1500,24 @@ PAGE = r"""<!doctype html>
   <div class="card">
     <h2>Activity</h2>
     <div class="log" id="logbox"><div class="empty">Waiting for the bot…</div></div>
+  </div>
+
+  <!-- Photographs of this screen have now missed the one field that mattered
+       five separate times. This is the same facts as text, so a report is a
+       paste instead of a photo. -->
+  <div class="card">
+    <h2>Something wrong? Send me this</h2>
+    <div class="note">Press the button, then paste it to me on Freelancer. It is
+      everything I need to see what the bot is doing — your settings, what it is
+      connected to, and the last 40 things it did. <b>It does not contain your
+      Pocket Option cookie or password</b>, only whether one is set.</div>
+    <div class="btns" style="margin-top:12px">
+      <button class="ghost" onclick="copyDiag()">Copy report</button>
+    </div>
+    <textarea id="diagbox" readonly spellcheck="false" style="display:none"
+              onclick="this.select()"></textarea>
+    <div class="sub" id="diaghint" style="display:none">Copied. If your clipboard
+      did not take it, click inside the box, press Ctrl+A then Ctrl+C.</div>
   </div>
 
 </div>
@@ -1694,6 +1811,41 @@ function toast(msg, bad){
   // 2.6 seconds is not long enough to read one — never mind act on it.
   document.getElementById('toastx').style.display = bad ? 'inline-block' : 'none';
   if (!bad) t._h = setTimeout(() => { t.className = 'toast'; }, 2600);
+}
+
+// ------------------------------------------------------------ diagnostics
+//
+// navigator.clipboard needs a secure context. http://localhost counts as one,
+// but http://penguin.linux.test:8080 — the address that works when localhost
+// does not, so the address he ends up on — does NOT. So the textarea is filled
+// and selected FIRST and shown either way; the clipboard call is the shortcut,
+// not the mechanism. A copy button that silently did nothing on the fallback
+// address would be worse than no button.
+async function copyDiag(){
+  const box = document.getElementById('diagbox');
+  const hint = document.getElementById('diaghint');
+  try{
+    const r = await fetch('/api/diagnostics', {headers: headers()});
+    if (r.status === 401){ askPass(); return; }
+    box.value = await r.text();
+  }catch(e){
+    toast('Could not read the report — is the bot still running?', true);
+    return;
+  }
+  box.style.display = 'block';
+  hint.style.display = 'block';
+  box.focus();
+  box.select();
+  let done = false;
+  try{
+    if (navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(box.value);
+      done = true;
+    }
+  }catch(e){ /* fall through to the selection, which is already made */ }
+  if (!done){ try{ done = document.execCommand('copy'); }catch(e){} }
+  toast(done ? 'Report copied — paste it to me on Freelancer.'
+             : 'Report is in the box below, already selected. Press Ctrl+C.', !done);
 }
 
 async function cmd(body){
