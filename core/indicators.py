@@ -126,3 +126,58 @@ def stochastic(
     k_now = k_values[0]
     d_now = sum(k_values) / len(k_values)
     return k_now, d_now
+
+
+def momentum_series(values: List[float], period: int = 10) -> List[float]:
+    """
+    Momentum, in the MetaTrader/Pocket Option form: close / close[-period] * 100.
+
+    100 means "exactly where it was `period` bars ago". Above 100 the market has
+    risen over that span, below 100 it has fallen. On FX the numbers sit very
+    close to 100 (99.96, 100.04) because a 1-minute move is a few pips — which
+    is precisely why nothing in this project compares Momentum against a fixed
+    number like RSI's 70/30. There is no such number: the useful range is a
+    different width on every pair, on every timeframe, and at every hour of the
+    day. See core/momentum_strategy.py, which reads the top and the bottom off
+    the indicator's own recent history instead.
+
+    Returns one value per input from `period` onward; the first `period` entries
+    have nothing to look back at and are omitted, so the result is shorter than
+    the input. A zero (or missing) reference price yields 100.0 rather than
+    raising — a division by zero here would kill a trading loop over a data gap.
+    """
+    if period <= 0 or len(values) <= period:
+        return []
+    out: List[float] = []
+    for i in range(period, len(values)):
+        ref = values[i - period]
+        out.append(values[i] / ref * 100.0 if ref else 100.0)
+    return out
+
+
+def momentum(values: List[float], period: int = 10) -> Optional[float]:
+    """Latest Momentum value, or None if there isn't enough data."""
+    series = momentum_series(values, period)
+    return series[-1] if series else None
+
+
+def percentile(values: List[float], pct: float) -> Optional[float]:
+    """
+    The value at `pct` percent through a sorted copy of `values` (0-100).
+
+    Linear interpolation between neighbours, so a 10th percentile of a short
+    list is not forced onto whichever single sample happens to sit there. Used
+    to place the "top" and "bottom" lines on an indicator that has no fixed
+    scale. None on empty input.
+    """
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    pct = max(0.0, min(100.0, pct))
+    ordered = sorted(values)
+    pos = (len(ordered) - 1) * pct / 100.0
+    low = int(pos)
+    high = min(low + 1, len(ordered) - 1)
+    frac = pos - low
+    return ordered[low] + (ordered[high] - ordered[low]) * frac

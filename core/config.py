@@ -22,6 +22,7 @@ from .alligator_strategy import AlligatorSettings
 from .rsi_strategy import RsiSettings
 from .confluence_strategy import ConfluenceSettings
 from .sr_strategy import SrSettings
+from .momentum_strategy import MomentumSettings
 from .ai_strategy import AiSettings
 
 load_dotenv()  # read a local .env if present
@@ -148,6 +149,8 @@ class BotConfig:
     #   "rsi" -> simple fast RSI reversal (RSI 10, for 30s candles / 1-2m expiry)
     #   "confluence" -> trade only when multiple best strategies agree (higher WR)
     #   "sr" / "sr_break" / "sr_fade" -> support & resistance (core/sr_strategy.py)
+    #   "momentum" / "momentum_follow" -> Momentum(10) at the top/bottom of its
+    #       own recent range (core/momentum_strategy.py)
     strategy_mode: str = "pullback"
 
     strategy: StrategySettings = field(default_factory=StrategySettings)
@@ -157,6 +160,7 @@ class BotConfig:
     rsi: RsiSettings = field(default_factory=RsiSettings)
     confluence: ConfluenceSettings = field(default_factory=ConfluenceSettings)
     sr: SrSettings = field(default_factory=SrSettings)
+    momentum: MomentumSettings = field(default_factory=MomentumSettings)
     ai: AiSettings = field(default_factory=AiSettings)
     martingale: MartingaleSettings = field(default_factory=MartingaleSettings)
     risk: RiskSettings = field(default_factory=RiskSettings)
@@ -227,6 +231,9 @@ class BotConfig:
         cfg.ai.gate = _s("AI_GATE", cfg.ai.gate)
         cfg.ai.daily_budget_usd = _f("AI_DAILY_BUDGET", cfg.ai.daily_budget_usd)
         cfg.trend.mode = _s("TREND_MODE", cfg.trend.mode)
+        cfg.momentum.period = _i("MOMENTUM_PERIOD", cfg.momentum.period)
+        cfg.momentum.band_lookback = _i("MOMENTUM_LOOKBACK", cfg.momentum.band_lookback)
+        cfg.momentum.band_percentile = _f("MOMENTUM_PERCENTILE", cfg.momentum.band_percentile)
 
         cfg.risk.base_stake = _f("BASE_STAKE", cfg.risk.base_stake)
         cfg.risk.daily_loss_cap = _f("DAILY_LOSS_CAP", cfg.risk.daily_loss_cap)

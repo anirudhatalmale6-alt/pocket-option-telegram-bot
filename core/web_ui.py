@@ -42,6 +42,8 @@ MAX_PAIRS = 12
 STRATEGY_CHOICES = [
     ("confluence", "Confluence — only trade when setups agree (recommended)"),
     ("ai", "AI reads the setup — needs your own API key, costs per trade"),
+    ("momentum", "Momentum 10 — trade the turn at the top/bottom of its range"),
+    ("momentum_follow", "Momentum 10 — REVERSED (follow the push instead)"),
     ("sr", "Support & resistance — bounce off the level"),
     ("sr_fade", "Support & resistance — REVERSED (bet the level breaks)"),
     ("sr_break", "Support & resistance — trade the breakout"),
@@ -199,6 +201,13 @@ class WebInterface:
             # on every poll so a new file appears without restarting the panel.
             "strategies": [{"id": k, "label": v}
                            for k, v in STRATEGY_CHOICES + self._plugin_choices()],
+            "momentum_period": c.momentum.period,
+            "momentum_lookback": c.momentum.band_lookback,
+            "momentum_percentile": c.momentum.band_percentile,
+            # The watchlist cap, so the "fill with USD pairs" button trims to the
+            # same number the server would refuse past, instead of filling the
+            # box and then having the save bounce.
+            "max_pairs": MAX_PAIRS,
             "stake": c.risk.base_stake,
             "loss_cap": c.risk.daily_loss_cap,
             "profit_target": c.risk.daily_profit_target,
@@ -293,6 +302,10 @@ class WebInterface:
             "",
             f"strategy        {s['strategy']}",
             f"pairs           {', '.join(s['pairs']) or s['asset']}",
+            *([f"momentum        {s['momentum_period']}, top/bottom = outer "
+               f"{s['momentum_percentile']:.0f}% of the last "
+               f"{s['momentum_lookback']} bars"]
+              if s["strategy"].startswith("momentum") else []),
             f"stake           {s['stake']}",
             f"expiry          {s['expiry']}s"
             + (f"   (practice really settles {max(1, round(s['expiry'] / s['practice_candle'])) * s['practice_candle']}s)"
@@ -358,6 +371,10 @@ class WebInterface:
         rows = [{
             "symbol": a.symbol,
             "name": a.name,
+            # Needed to pick out currency pairs: "USD" appears in plenty of
+            # symbols that are not FX at all, and a stock index is not what
+            # somebody means by "USD pairs".
+            "kind": a.kind,
             "payout": a.payout,
             "breakeven": round(a.breakeven_win_rate, 1),
             "min_expiry": a.min_expiry,
@@ -1056,6 +1073,25 @@ class WebInterface:
                 c.strategy_mode = mode
                 changed.append(f"strategy {mode}")
 
+            if "momentum_period" in body:
+                v = int(float(body["momentum_period"]))
+                if not 2 <= v <= 100:
+                    return {"ok": False, "message": (
+                        "Momentum length must be between 2 and 100. The client "
+                        "setting on your chart is 10.")}
+                c.momentum.period = v
+                changed.append(f"momentum {v}")
+
+            if "momentum_percentile" in body:
+                v = float(body["momentum_percentile"])
+                if not 1 <= v <= 45:
+                    return {"ok": False, "message": (
+                        "How extreme must be between 1 and 45 percent. At 50 the "
+                        "top and the bottom meet in the middle, so every bar "
+                        "would be both at once.")}
+                c.momentum.band_percentile = v
+                changed.append(f"momentum edge {v:.0f}%")
+
             if "loss_cap" in body:
                 v = float(body["loss_cap"])
                 if v < 0:
@@ -1538,7 +1574,21 @@ PAGE = r"""<!doctype html>
   <div class="card">
     <h2>Settings</h2>
     <div class="grid">
-      <div><label for="f-strategy">Strategy</label><select id="f-strategy"></select></div>
+      <div><label for="f-strategy">Strategy</label><select id="f-strategy" onchange="strategyEdited()"></select></div>
+      <div id="momentum-box" style="display:none">
+        <label for="f-momentum">Momentum length</label>
+        <input id="f-momentum" type="number" min="2" max="100" step="1"
+               oninput="strategyEdited()">
+        <label for="f-momentum-pct" style="margin-top:10px">Top / bottom = outer
+          …% of the range</label>
+        <input id="f-momentum-pct" type="number" min="1" max="45" step="1"
+               oninput="strategyEdited()">
+        <div class="sub">Momentum has no fixed 70/30 line like RSI — how big a
+          move counts as "a lot" is different on every pair and every hour. So
+          the top and the bottom are read off the line's own recent range: the
+          outer few percent of the last 100 candles. Bigger percent = more
+          trades; smaller = rarer, more extreme ones.</div>
+      </div>
       <div><label for="f-asset">Asset</label><input id="f-asset" placeholder="EURUSD_otc">
         <div class="sub"><a href="#" onclick="loadPayouts();return false;">Show live payouts &rarr;</a></div></div>
       <div style="grid-column:1/-1">
@@ -1549,8 +1599,11 @@ PAGE = r"""<!doctype html>
           Ten pairs means about ten times as many trades an hour, so you find out
           ten times faster whether a strategy actually works — it does not make
           the strategy any better. Still one trade at a time.
-          <a href="#" onclick="loadPayouts(true);return false;">Fill this from the
-          best-paying pairs &rarr;</a></div>
+          <a href="#" onclick="loadPayouts('best');return false;">Fill this from the
+          best-paying pairs &rarr;</a>
+          &nbsp;·&nbsp;
+          <a href="#" onclick="loadPayouts('usd');return false;">Fill this with USD
+          pairs &rarr;</a></div>
       </div>
       <div><label for="f-stake">Stake per trade ($)</label><input id="f-stake" type="number" step="0.01" min="0.01"></div>
       <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div>
@@ -1990,6 +2043,8 @@ function saveSettings(){
   const body = {
     action:'settings',
     strategy: document.getElementById('f-strategy').value,
+    momentum_period: document.getElementById('f-momentum').value,
+    momentum_percentile: document.getElementById('f-momentum-pct').value,
     asset:    document.getElementById('f-asset').value,
     stake:    document.getElementById('f-stake').value,
     expiry:   document.getElementById('f-expiry').value,
@@ -2018,7 +2073,9 @@ function saveSettings(){
   // On a rejection — "that is 15 pairs, trim it to 12" — the list must stay on
   // screen to be trimmed. Clearing the flag there would revert the box to the
   // old pairs and throw away the work the message just asked them to fix.
-  cmd(body).then(function(res){ if (res && res.ok) pairsDirty = false; });
+  cmd(body).then(function(res){
+    if (res && res.ok){ pairsDirty = false; strategyDirty = false; }
+  });
 }
 
 // ---- live payouts -------------------------------------------------------
@@ -2032,6 +2089,26 @@ var payoutBySymbol = {};
 // True while the watchlist box holds edits that have not been saved yet, so the
 // poll leaves it alone. Cleared once the server has accepted them.
 var pairsDirty = false;
+
+// How many pairs the bot will accept, told to us by the bot rather than
+// repeated here — a second copy of the number is a second thing to forget.
+var maxPairs = 12;
+
+// True while the strategy dropdown (or a Momentum field) holds a choice that
+// has not been saved yet.
+//
+// This is not cosmetic. The panel repaints every 2 seconds from the bot's saved
+// settings, and setField only leaves a field alone while it is FOCUSED. So:
+// pick a strategy, click into any other box, and two seconds later the dropdown
+// quietly snaps back to the old one — while Save reads the dropdown, so it then
+// saves the strategy you thought you had just replaced. A control that lies
+// about what it is set to is worse than one that is hard to find.
+var strategyDirty = false;
+
+function strategyEdited(){
+  strategyDirty = true;
+  showMomentumBox();
+}
 
 async function loadPayouts(forWatchlist){
   const box  = document.getElementById('payouts');
@@ -2060,7 +2137,8 @@ async function loadPayouts(forWatchlist){
         '<td><button class="ghost" onclick="addPair(\'' + a.symbol +
         '\')">+ watch</button></td></tr>'
       ).join('');
-    if (forWatchlist) fillWatchlist(rows);
+    if (forWatchlist === 'usd') fillUsdPairs(rows);
+    else if (forWatchlist) fillWatchlist(rows);
   }catch(e){ note.textContent = 'Could not reach the bot.'; }
 }
 
@@ -2080,6 +2158,43 @@ function fillWatchlist(rows){
   pairsDirty = true;
   toast('Filled in ' + top.length + ' pairs paying ' + top[top.length-1].payout +
         '% or better. Press Save settings to use them.');
+}
+
+// The Momentum settings only mean anything while a Momentum strategy is
+// picked. Driven by the dropdown's CURRENT value rather than the saved one, so
+// choosing it reveals the fields immediately — before Save, which is when
+// somebody actually wants to look at them.
+function showMomentumBox(){
+  const sel = document.getElementById('f-strategy');
+  const on = (sel.value || '').indexOf('momentum') === 0;
+  document.getElementById('momentum-box').style.display = on ? '' : 'none';
+}
+
+// Fill the watchlist with every open USD pair, best payout first.
+//
+// "USD pairs" means currency pairs with USD on one side of them — not a stock
+// that happens to have USD in its symbol. Whether they come out OTC or not is
+// decided by what is open at the time: at the weekend, and outside market
+// hours, Pocket Option's OTC pairs are the only currencies trading, so that is
+// what this finds. The list is trimmed to the cap the bot accepts, keeping the
+// best-paying ones, because the payout sets the win rate you have to beat.
+function fillUsdPairs(rows){
+  const cap = maxPairs;
+  const usd = rows.filter(function(a){
+    return a.kind === 'currency' && /USD/.test(a.symbol);
+  });
+  if (!usd.length){
+    toast('No USD pair is open right now.', true);
+    return;
+  }
+  const pick = usd.slice(0, cap);            // rows arrive sorted by payout
+  document.getElementById('f-pairs').value = pick.map(a => a.symbol).join(', ');
+  pairsDirty = true;
+  const dropped = usd.length - pick.length;
+  toast('Filled in ' + pick.length + ' USD pairs, ' + pick[0].payout + '% down to ' +
+        pick[pick.length - 1].payout + '%' +
+        (dropped ? ' (' + dropped + ' more left out — the bot takes ' + cap + ')' : '') +
+        '. Press Save settings to use them.');
 }
 
 function addPair(symbol){
@@ -2344,7 +2459,13 @@ function render(s){
     sel.innerHTML = s.strategies.map(x => `<option value="${x.id}">${x.label}</option>`).join('');
     builtStrategies = stratKey;
   }
-  setField('f-strategy', s.strategy);
+  if (!strategyDirty) setField('f-strategy', s.strategy);
+  maxPairs = s.max_pairs || maxPairs;
+  if (!strategyDirty){
+    setField('f-momentum', s.momentum_period);
+    setField('f-momentum-pct', Math.round(s.momentum_percentile));
+  }
+  showMomentumBox();
   setField('f-asset', s.asset);
   // Only fill the watchlist box once more than one pair is actually being
   // watched. Echoing the single pair into it would make the box look like a

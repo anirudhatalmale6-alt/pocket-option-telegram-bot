@@ -36,6 +36,7 @@ from typing import Callable, Dict, List, Tuple
 from core.alligator_strategy import AlligatorSettings, AlligatorStrategy
 from core.confluence_strategy import ConfluenceSettings, ConfluenceStrategy
 from core.custom_strategy import CustomSettings, CustomStrategy
+from core.momentum_strategy import MomentumSettings, MomentumStrategy
 from core.rsi_strategy import RsiSettings, RsiStrategy
 from core.sr_strategy import SrSettings, SrStrategy
 from core.strategy import Candle, Direction, Strategy, StrategySettings
@@ -59,6 +60,11 @@ STRATEGIES: Dict[str, Callable[[], object]] = {
     "custom": lambda: CustomStrategy(CustomSettings(fade=True)),
     "alligator": lambda: AlligatorStrategy(AlligatorSettings()),
     "rsi": lambda: RsiStrategy(RsiSettings()),
+    # Momentum(10) at the top/bottom of its own recent range — the client's
+    # latest request. Both readings, for the same reason as sr_bounce/sr_fade:
+    # they are opposite bets and picking one for him would hide the choice.
+    "momentum_turn": lambda: MomentumStrategy(MomentumSettings()),
+    "momentum_follow": lambda: MomentumStrategy(MomentumSettings(fade=True)),
     # The client's own idea, both readings of it. They are opposite trades, so
     # they are listed separately rather than one being picked for him.
     "sr_bounce": lambda: SrStrategy(SrSettings(mode="bounce")),
@@ -138,7 +144,7 @@ def main() -> None:
           f"-> break-even win rate {be:.1f}%")
     print(f"A verdict needs at least {MIN_SAMPLE} decided trades. "
           f"Ties are refunded, so excluded from the win rate.\n")
-    print(f"{'tf':>4} {'strategy':>11} {'trades':>7} {'ties':>6} {'win rate':>9} "
+    print(f"{'tf':>4} {'strategy':>16} {'trades':>7} {'ties':>6} {'win rate':>9} "
           f"{'95% CI':>14}  verdict")
     print("-" * 74)
 
@@ -153,7 +159,7 @@ def main() -> None:
             r = backtest(candles, make())
             results.append((tag, name, r))
             ci = f"{r['lo']:.0f}-{r['hi']:.0f}%"
-            print(f"{tag:>4} {name:>11} {r['n']:>7} {r['ties']:>6} "
+            print(f"{tag:>4} {name:>16} {r['n']:>7} {r['ties']:>6} "
                   f"{r['wr']:>8.1f}% {ci:>14}  {verdict(r, be)}")
         print()
 

@@ -30,6 +30,7 @@ from .alligator_strategy import AlligatorStrategy
 from .rsi_strategy import RsiStrategy
 from .confluence_strategy import ConfluenceStrategy
 from .sr_strategy import SrStrategy
+from .momentum_strategy import MomentumStrategy
 from .ai_strategy import AiStrategy
 from . import plugins
 
@@ -64,6 +65,12 @@ def build_evaluator(config: BotConfig):
         config.sr.mode = "break" if mode == "sr_break" else "bounce"
         config.sr.fade = (mode == "sr_fade")
         return SrStrategy(config.sr)
+    if mode in ("momentum", "momentum_follow"):
+        # Same module, opposite bets: reach the top of the range and either bet
+        # the push is exhausted or bet it is real. Separate dropdown entries so
+        # the panel always says which of the two is running.
+        config.momentum.fade = (mode == "momentum_follow")
+        return MomentumStrategy(config.momentum)
     if mode == "ai":
         # The AI never runs alone. A cheap local strategy decides which candles
         # are worth paying to ask about; without that the model is asked on
