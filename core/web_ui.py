@@ -170,6 +170,13 @@ class WebInterface:
             "uid": c.po_uid,
             "demo": c.po_demo,
             "practice_note": self.practice_note,
+            # The candle size practice is ACTUALLY replaying, which is not
+            # always the one in the box: free EUR/USD history has no detail
+            # below 5 minutes. An expiry that is not a whole number of these
+            # gets rounded when the trade settles, so the panel would otherwise
+            # show 500s while the run was really scoring 600s options.
+            "practice_candle": getattr(
+                getattr(self.trader, "broker", None), "effective_timeframe", 0),
             # Updating downloads new code but a running bot keeps the old code in
             # memory, so the page can be older than the files it came from. Say
             # so here rather than letting a fixed bug look unfixed.
@@ -1345,7 +1352,8 @@ PAGE = r"""<!doctype html>
           best-paying pairs &rarr;</a></div>
       </div>
       <div><label for="f-stake">Stake per trade ($)</label><input id="f-stake" type="number" step="0.01" min="0.01"></div>
-      <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div></div>
+      <div><label for="f-expiry">Expiry (seconds)</label><input id="f-expiry" type="number" min="60" step="1"><div class="sub">Pocket Option minimum is 60</div>
+        <div class="sub" id="f-expiry-note" style="display:none"></div></div>
       <div><label for="f-timeframe">Candle size (seconds)</label>
         <select id="f-timeframe">
           <option value="5">5 seconds</option>
@@ -2088,6 +2096,23 @@ function render(s){
   setField('f-stake', s.stake);
   setField('f-expiry', s.expiry);
   setField('f-timeframe', s.timeframe);
+  // Practice settles against replayed candles, so an option can only be a
+  // whole number of them. 500s against 5-minute bars is really a 600s option,
+  // and a win rate read off that is a win rate for a setting nobody chose.
+  // Only practice rounds; on a real account Pocket Option honours the number.
+  const expNote = document.getElementById('f-expiry-note');
+  const repCandle = s.practice_candle || 0;
+  const repSpan = repCandle ? Math.max(1, Math.round(s.expiry / repCandle)) : 0;
+  if (s.mode === 'PRACTICE' && repCandle && repSpan * repCandle !== s.expiry){
+    expNote.style.display = 'block';
+    expNote.innerHTML = 'In practice this is really a <b>' + (repSpan * repCandle) +
+      's</b> option — replayed history comes in ' + repCandle + 's candles and an ' +
+      'option has to be a whole number of them. Set the expiry to a multiple of ' +
+      repCandle + ' and the panel will match what is being scored. On a real ' +
+      'account your ' + s.expiry + 's is used as-is.';
+  } else {
+    expNote.style.display = 'none';
+  }
   setField('f-loss', s.loss_cap);
   setField('f-target', s.profit_target);
   setField('f-mg', s.mg_enabled);
