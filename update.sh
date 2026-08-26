@@ -26,8 +26,97 @@ YELLOW=$(printf '\033[33m')   # `set -u` turns a missing one of these into a cra
 
 BEFORE=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
+. ./lib_port.sh              # PORT, PY, port_state, listening
+
 echo "${BOLD}==>${RESET} Fetching the latest version..."
-git pull --ff-only
+
+# Captured rather than let loose on the terminal, because `set -e` turns any
+# failure here into an instant death — and the last thing printed is then git's
+# own wording. "fatal: unable to access ... Could not resolve host: github.com"
+# is a perfectly precise sentence that says nothing at all to the person reading
+# it, and it arrives with no hint that their bot is fine, still running, and
+# that only the download failed.
+if PULL_OUT=$(git pull --ff-only 2>&1); then
+    printf '%s\n' "$PULL_OUT" | sed 's/^/       /'
+else
+    printf '%s\n' "$PULL_OUT" | sed 's/^/       /'
+    case "$PULL_OUT" in
+      *"Could not resolve host"*|*"Temporary failure in name resolution"*|\
+      *"Could not resolve proxy"*|*"Connection timed out"*|\
+      *"unable to access"*|*"Network is unreachable"*|*"Connection refused"*)
+        # This machine could not look up or reach github.com. Distinguishing
+        # the two matters: they have different fixes, and guessing wrong sends
+        # someone to restart hardware that was never the problem.
+        #
+        # A raw address that answers while a name does not is DNS alone, which
+        # on a Chromebook is nearly always the Linux container having lost its
+        # resolver — after a sleep, a network change, or ChromeOS restarting
+        # the container underneath it. Restarting Linux rebuilds it.
+        NAME=no; NET=no
+        getent hosts github.com >/dev/null 2>&1 && NAME=yes
+        # A TCP connect rather than a ping. ping is the obvious tool and the
+        # wrong one here: it needs a raw socket or a permitted group, so in a
+        # container it can fail for reasons that have nothing to do with the
+        # network — and this test failing is what decides whether somebody is
+        # told to check their Wi-Fi. Opening a socket to a well-known address
+        # needs no privilege and fails only when the network really is down.
+        "$PY" - <<'PYEOF' >/dev/null 2>&1 && NET=yes
+import socket, sys
+try:
+    socket.create_connection(("1.1.1.1", 443), 3).close()
+except OSError:
+    sys.exit(1)
+PYEOF
+
+        echo
+        echo "${YELLOW}${BOLD}No new code was downloaded — this computer could not reach github.com.${RESET}"
+        echo
+        if [ "$NAME" = no ] && [ "$NET" = yes ]; then
+            cat <<EOF
+Your internet is working, but Linux on this Chromebook has lost its ability to
+look up website names. That happens on its own after the Chromebook sleeps.
+
+To fix it: right-click the ${BOLD}Terminal${RESET} icon, choose ${BOLD}Shut down Linux${RESET},
+then open Terminal again and run ${BOLD}bot update${RESET}. It takes about a minute.
+EOF
+        elif [ "$NET" = no ]; then
+            cat <<EOF
+This computer is not on the internet at all right now. Check the Wi-Fi symbol
+at the bottom right of the screen, then run ${BOLD}bot update${RESET} again.
+
+If the Wi-Fi looks fine, right-click the ${BOLD}Terminal${RESET} icon, choose
+${BOLD}Shut down Linux${RESET}, reopen Terminal and try once more.
+EOF
+        else
+            cat <<EOF
+The connection is there but github.com would not answer. That is usually
+temporary. Wait a couple of minutes and run ${BOLD}bot update${RESET} again.
+EOF
+        fi
+        cat <<EOF
+
+${BOLD}Nothing is broken.${RESET} Your bot, your settings and your saved cookie are all
+untouched — a failed download cannot change any of them. It is still running
+the version it was already running.
+EOF
+        # And make sure that last sentence is true. An update that could not
+        # download must never be the reason somebody is left with no bot: the
+        # panel is the only thing they have.
+        if ! listening; then
+            echo
+            echo "${BOLD}==>${RESET} Starting the bot on the version you already have..."
+            bash open_panel.sh || true
+        fi
+        echo
+        echo "    http://localhost:${PORT}"
+        exit 0
+        ;;
+    esac
+    # Anything else — a conflict, a local edit in the way, a broken repo — is
+    # not something a friendly paragraph can fix, and the real git text above
+    # is what I need to see. Fail loudly, as before.
+    exit 1
+fi
 
 AFTER=$(git rev-parse --short HEAD)
 
@@ -43,8 +132,6 @@ if [ -x .venv/bin/python ]; then
     .venv/bin/python -m pip install --quiet -r requirements.txt
     echo "${GREEN}  ok${RESET} dependencies fine"
 fi
-
-. ./lib_port.sh              # PORT, PY, port_state, listening
 
 # Pulling new code does nothing to a bot that is already running: Python loaded
 # the old files at startup and will keep using them. Refreshing the browser does
